@@ -3,9 +3,15 @@ import { useAuth } from "@/context/AuthContext";
 import { useCart } from "@/context/CartContext";
 import { useOrders } from "@/context/OrderContext";
 import { useTableOrders } from "@/context/TableOrderContext";
-import { CheckCircle2, CreditCard, FileText, IndianRupee, LogIn, MapPin, Minus, Phone, Plus, ShieldCheck, ShoppingBag, Sparkles, Trash2, Truck, User, UtensilsCrossed, Wallet, X } from "lucide-react";
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { reservationApi } from "@/lib/api";
+import {
+  CheckCircle2, CreditCard, FileText, IndianRupee, LogIn,
+  MapPin, Minus, Phone, Plus, ShieldCheck, ShoppingBag,
+  Sparkles, Trash2, Truck, User, UtensilsCrossed, Wallet,
+  X, AlertCircle, Loader2, Hash, RefreshCw
+} from "lucide-react";
+import { useEffect, useState, useCallback } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 
 // Load Razorpay script
@@ -19,18 +25,110 @@ const loadRazorpayScript = () => {
   });
 };
 
+interface AvailableTable {
+  tableNo: number;
+  capacity: number;
+  isAvailable: boolean;
+}
+
+// Table capacity mapping (adjust based on your restaurant layout)
+const TABLE_CAPACITIES: Record<number, number> = {
+  1: 2, 2: 2, 3: 4, 4: 4, 5: 4,
+  6: 4, 7: 4, 8: 4, 9: 4, 10: 4,
+  11: 6, 12: 6, 13: 6, 14: 6, 15: 6,
+  16: 8, 17: 8, 18: 8, 19: 8, 20: 8,
+  21: 10, 22: 10, 23: 10, 24: 10, 25: 10,
+};
+
 const CheckoutPage = () => {
-  const { items, totalPrice, clearCart, updateQty, removeItem } = useCart();
-  const { user, isLoggedIn } = useAuth();
-  const { addOrder, getUserReservations } = useOrders();
+  const { items, totalPrice, clearCart, updateQty, removeItem, refreshCart } = useCart();
+  const { user, isLoggedIn, refreshUser } = useAuth();
+  const { addOrder, getUserReservations, refreshOrders } = useOrders();
   const { addTableOrder } = useTableOrders();
   const navigate = useNavigate();
+  const location = useLocation();
+
   const [form, setForm] = useState({ name: "", phone: "", address: "", payment: "razorpay", selectedAddressId: "" });
   const [loading, setLoading] = useState(false);
   const [orderType, setOrderType] = useState<"delivery" | "dine-in">("delivery");
-  const [tableNumber, setTableNumber] = useState<number>(1);
+  const [tableNumber, setTableNumber] = useState<number>(0);
   const [tableNotes, setTableNotes] = useState("");
   const [successPopup, setSuccessPopup] = useState<{ show: boolean; orderId: string; type: string }>({ show: false, orderId: "", type: "" });
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Table availability states
+  const [availableTables, setAvailableTables] = useState<AvailableTable[]>([]);
+  const [loadingTables, setLoadingTables] = useState(false);
+  const [showTableSelector, setShowTableSelector] = useState(false);
+  const [noOfGuests, setNoOfGuests] = useState(2);
+  const [selectedDate, setSelectedDate] = useState("");
+  const [selectedTime, setSelectedTime] = useState("");
+
+  // Function to refresh all data
+  const refreshAllData = useCallback(async () => {
+    if (isRefreshing) return;
+
+    setIsRefreshing(true);
+    try {
+      await Promise.all([
+        refreshCart?.(),
+        refreshUser?.(),
+        refreshOrders?.()
+      ]);
+      console.log("All data refreshed successfully");
+    } catch (error) {
+      console.error("Error refreshing data:", error);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [refreshCart, refreshUser, refreshOrders, isRefreshing]);
+
+  // Auto-refresh when page becomes visible (user returns to tab)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        console.log("Page became visible, refreshing data...");
+        refreshAllData();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [refreshAllData]);
+
+  // Refresh when navigating back to checkout from other pages
+  useEffect(() => {
+    const navigationEntries = performance.getEntriesByType('navigation');
+    const isReload = navigationEntries.length > 0 && (navigationEntries[0] as PerformanceNavigationTiming).type === 'reload';
+
+    // Check if coming from profile, menu, or cart pages
+    const fromPage = location.state?.from;
+    const shouldRefresh = fromPage === '/profile' ||
+                         fromPage === '/menu' ||
+                         fromPage === '/cart' ||
+                         fromPage === '/orders' ||
+                         isReload;
+
+    if (shouldRefresh) {
+      console.log("Navigated from:", fromPage, "refreshing data...");
+      refreshAllData();
+
+      // Clear the state to prevent multiple refreshes
+      navigate('/checkout', { replace: true, state: {} });
+    }
+  }, [location.state, navigate, refreshAllData]);
+
+  // Set default date and time
+  useEffect(() => {
+    const today = new Date();
+    const formattedDate = today.toISOString().split('T')[0];
+    const currentTime = today.toTimeString().slice(0, 5);
+    setSelectedDate(formattedDate);
+    setSelectedTime(currentTime);
+  }, []);
 
   // Prefill form with user data if logged in
   useEffect(() => {
@@ -59,6 +157,49 @@ const CheckoutPage = () => {
     }
   };
 
+  // Fetch available tables for dine-in
+  const fetchAvailableTables = async () => {
+    if (!selectedDate || !selectedTime) {
+      toast.error("Please select date and time");
+      return;
+    }
+
+    setLoadingTables(true);
+    try {
+      const response = await reservationApi.getAvailableTables({
+        noOfGuests,
+        date: selectedDate,
+        startTime: selectedTime,
+        endTime: selectedTime,
+      });
+
+      const availableTableNumbers = response?.data?.data?.freeTables || response?.data?.freeTables || [];
+
+      console.log("Available table numbers:", availableTableNumbers);
+
+      if (Array.isArray(availableTableNumbers) && availableTableNumbers.length > 0) {
+        const tables: AvailableTable[] = availableTableNumbers.map((tableNo) => ({
+          tableNo: Number(tableNo),
+          capacity: TABLE_CAPACITIES[Number(tableNo)] || 4,
+          isAvailable: true,
+        }));
+
+        setAvailableTables(tables);
+        setShowTableSelector(true);
+        toast.success(`Found ${tables.length} available table(s)`);
+      } else {
+        setAvailableTables([]);
+        setShowTableSelector(true);
+        toast.info("No tables available for the selected time slot");
+      }
+    } catch (error) {
+      console.error("Failed to fetch available tables:", error);
+      toast.error("Failed to check table availability");
+      setAvailableTables([]);
+    } finally {
+      setLoadingTables(false);
+    }
+  };
 
   const showSuccessAndRedirect = (orderId: string, type: string) => {
     setSuccessPopup({ show: true, orderId, type });
@@ -74,13 +215,17 @@ const CheckoutPage = () => {
 
     if (orderType === "dine-in") {
       if (tableNumber < 1) {
-        toast.error("Please enter a valid table number");
+        toast.error("Please select a valid table number");
+        return;
+      }
+      if (!user) {
+        toast.error("Please login to place order");
         return;
       }
       setLoading(true);
       const newOrder = await addTableOrder({
         tableNumber,
-        customerName: user!.name || form.name,
+        customerName: user.name || form.name,
         items: items.map(item => ({
           id: item.id,
           name: item.name,
@@ -104,7 +249,6 @@ const CheckoutPage = () => {
 
     setLoading(true);
     try {
-      // 1. Create order and get payment intent from backend
       const result = await addOrder({
         userId: user!.id,
         items: items.map(item => ({
@@ -126,7 +270,6 @@ const CheckoutPage = () => {
 
       const { order, payment } = result;
 
-      // 2. If Razorpay was selected, open the modal
       if (form.payment === "razorpay" && payment) {
         const res = await loadRazorpayScript();
         if (!res) {
@@ -141,7 +284,7 @@ const CheckoutPage = () => {
           currency: "INR",
           name: "Athenura Restaurant",
           description: `Order #${order.id}`,
-          order_id: payment, // This is the ID returned by razorpay.orders.create on backend
+          order_id: payment,
           handler: async function (response: any) {
             console.log("Payment successful:", response);
             setLoading(false);
@@ -167,7 +310,6 @@ const CheckoutPage = () => {
         const paymentObject = new (window as any).Razorpay(options);
         paymentObject.open();
       } else {
-        // COD path or failed payment intent
         setLoading(false);
         if (order?.id) {
           showSuccessAndRedirect(order.id, "delivery");
@@ -181,6 +323,13 @@ const CheckoutPage = () => {
       toast.error(`Error: ${msg}`);
       setLoading(false);
     }
+  };
+
+  // Manual refresh button handler
+  const handleManualRefresh = async () => {
+    toast.info("Refreshing your data...");
+    await refreshAllData();
+    toast.success("Data refreshed successfully!");
   };
 
   if (items.length === 0 && !successPopup.show) {
@@ -200,7 +349,6 @@ const CheckoutPage = () => {
     );
   }
 
-  // Require login before checkout
   if (!isLoggedIn) {
     return (
       <main className="pt-24 pb-20 min-h-screen bg-background flex items-center justify-center">
@@ -260,18 +408,34 @@ const CheckoutPage = () => {
         </div>
       </section>
 
-      {/* Trust Badges */}
+      {/* Trust Badges with Refresh Button */}
       <section className="border-b border-border bg-card">
         <div className="container py-4">
-          <div className="flex flex-wrap items-center justify-center gap-6 md:gap-10">
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <ShieldCheck className="w-5 h-5 text-green-500" />
-              <span className="font-body text-sm">Secure Checkout</span>
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-6 md:gap-10">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <ShieldCheck className="w-5 h-5 text-green-500" />
+                <span className="font-body text-sm">Secure Checkout</span>
+              </div>
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Truck className="w-5 h-5 text-primary" />
+                <span className="font-body text-sm">Free Delivery over ₹500</span>
+              </div>
             </div>
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <Truck className="w-5 h-5 text-primary" />
-              <span className="font-body text-sm">Free Delivery over ₹500</span>
-            </div>
+
+            {/* Manual Refresh Button */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleManualRefresh}
+              disabled={isRefreshing}
+              className="gap-2 text-muted-foreground hover:text-primary"
+            >
+              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+              <span className="font-body text-sm">
+                {isRefreshing ? 'Refreshing...' : 'Refresh'}
+              </span>
+            </Button>
           </div>
         </div>
       </section>
@@ -295,7 +459,11 @@ const CheckoutPage = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <button
                     type="button"
-                    onClick={() => setOrderType("delivery")}
+                    onClick={() => {
+                      setOrderType("delivery");
+                      setShowTableSelector(false);
+                      setTableNumber(0);
+                    }}
                     className={`flex items-center gap-4 p-5 border-2 rounded-xl transition-all text-left ${
                       orderType === "delivery" ? "border-primary bg-primary/5 shadow-sm" : "border-border hover:border-primary/40"
                     }`}
@@ -365,7 +533,7 @@ const CheckoutPage = () => {
               {/* Delivery / Table Details */}
               <form onSubmit={handleOrder} id="checkout-form" className="space-y-6">
 
-                {/* Dine-In Table Details */}
+                {/* Dine-In Table Details with Availability */}
                 {orderType === "dine-in" && (
                   <div className="bg-card border border-border rounded-2xl p-6 animate-fade-in-up stagger-1">
                     <div className="flex items-center gap-3 mb-5">
@@ -374,27 +542,148 @@ const CheckoutPage = () => {
                       </div>
                       <h2 className="font-display text-xl font-semibold">Table Details</h2>
                     </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="font-body text-sm font-medium mb-2 block">Table Number *</label>
-                        <input
-                          type="number"
-                          min={1}
-                          value={tableNumber}
-                          onChange={(e) => setTableNumber(Number(e.target.value))}
-                          className="w-full px-4 py-3 rounded-xl border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                          required
-                        />
+
+                    {/* Table Availability Check */}
+                    {!showTableSelector ? (
+                      <div className="space-y-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <label className="font-body text-sm font-medium mb-2 block">Your Name</label>
+                            <input
+                              value={user?.name || ""}
+                              disabled
+                              className="w-full px-4 py-3 rounded-xl border border-border bg-muted font-body text-sm text-muted-foreground"
+                            />
+                          </div>
+                          <div>
+                            <label className="font-body text-sm font-medium mb-2 block">Number of Guests *</label>
+                            <select
+                              value={noOfGuests}
+                              onChange={(e) => setNoOfGuests(Number(e.target.value))}
+                              className="w-full px-4 py-3 rounded-xl border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                            >
+                              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
+                                <option key={num} value={num}>{num} {num === 1 ? "Guest" : "Guests"}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <label className="font-body text-sm font-medium mb-2 block">Date *</label>
+                            <input
+                              type="date"
+                              value={selectedDate}
+                              onChange={(e) => setSelectedDate(e.target.value)}
+                              min={new Date().toISOString().split('T')[0]}
+                              className="w-full px-4 py-3 rounded-xl border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                            />
+                          </div>
+                          <div>
+                            <label className="font-body text-sm font-medium mb-2 block">Time *</label>
+                            <input
+                              type="time"
+                              value={selectedTime}
+                              onChange={(e) => setSelectedTime(e.target.value)}
+                              className="w-full px-4 py-3 rounded-xl border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                            />
+                          </div>
+                        </div>
+                        <Button
+                          type="button"
+                          onClick={fetchAvailableTables}
+                          disabled={loadingTables}
+                          className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body font-semibold gap-2"
+                        >
+                          {loadingTables ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              Checking Availability...
+                            </>
+                          ) : (
+                            <>
+                              <Hash className="w-4 h-4" />
+                              Check Available Tables
+                            </>
+                          )}
+                        </Button>
                       </div>
-                      <div>
-                        <label className="font-body text-sm font-medium mb-2 block">Your Name</label>
-                        <input
-                          value={user?.name || ""}
-                          disabled
-                          className="w-full px-4 py-3 rounded-xl border border-border bg-muted font-body text-sm text-muted-foreground"
-                        />
+                    ) : (
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <span className="font-body text-sm font-medium">Select Your Table:</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowTableSelector(false);
+                              setTableNumber(0);
+                            }}
+                            className="font-body text-xs text-primary hover:underline"
+                          >
+                            Change Criteria
+                          </button>
+                        </div>
+
+                        {loadingTables ? (
+                          <div className="text-center p-6">
+                            <Loader2 className="w-8 h-8 animate-spin text-primary mx-auto" />
+                            <p className="font-body text-sm text-muted-foreground mt-2">Loading available tables...</p>
+                          </div>
+                        ) : availableTables.length > 0 ? (
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-h-64 overflow-y-auto p-1">
+                            {availableTables.map((table) => (
+                              <button
+                                type="button"
+                                key={table.tableNo}
+                                onClick={() => setTableNumber(table.tableNo)}
+                                className={`p-3 rounded-lg border-2 transition-all text-center ${
+                                  tableNumber === table.tableNo
+                                    ? "border-primary bg-primary/10 shadow-sm"
+                                    : "border-border hover:border-primary/40 bg-background"
+                                }`}
+                              >
+                                <div className="font-body text-lg font-bold text-foreground">
+                                  Table {table.tableNo}
+                                </div>
+                                <div className="font-body text-[10px] text-muted-foreground">
+                                  Capacity: {table.capacity}
+                                </div>
+                                {tableNumber === table.tableNo && (
+                                  <CheckCircle2 className="w-3 h-3 text-primary mx-auto mt-1" />
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-center p-6 bg-muted/50 rounded-lg">
+                            <AlertCircle className="w-10 h-10 text-muted-foreground mx-auto mb-2" />
+                            <p className="font-body text-sm text-muted-foreground">
+                              No tables available for the selected time
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowTableSelector(false);
+                                setTableNumber(0);
+                              }}
+                              className="mt-3 font-body text-sm text-primary hover:underline"
+                            >
+                              Try different time
+                            </button>
+                          </div>
+                        )}
+
+                        {tableNumber > 0 && (
+                          <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                            <p className="font-body text-sm text-green-700 flex items-center gap-2">
+                              <CheckCircle2 className="w-4 h-4" />
+                              Table #{tableNumber} selected for your dine-in order
+                            </p>
+                          </div>
+                        )}
                       </div>
-                    </div>
+                    )}
+
                     <div className="mt-4">
                       <label className="font-body text-sm font-medium mb-2 block">Special Notes (optional)</label>
                       <textarea
@@ -405,12 +694,15 @@ const CheckoutPage = () => {
                         className="w-full px-4 py-3 rounded-xl border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all resize-none"
                       />
                     </div>
-                    <div className="mt-4 p-4 bg-orange-50 border border-orange-200 rounded-xl">
-                      <p className="font-body text-xs text-orange-700 flex items-center gap-2">
-                        <UtensilsCrossed className="w-4 h-4" />
-                        <span>Your order will be served directly to <strong>Table {tableNumber}</strong>. No delivery charge for dine-in orders.</span>
-                      </p>
-                    </div>
+
+                    {tableNumber > 0 && (
+                      <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl">
+                        <p className="font-body text-xs text-orange-700 flex items-center gap-2">
+                          <UtensilsCrossed className="w-4 h-4" />
+                          <span>Your order will be served directly to <strong>Table {tableNumber}</strong>. No delivery charge for dine-in orders.</span>
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -493,7 +785,7 @@ const CheckoutPage = () => {
                       <h2 className="font-display text-xl font-semibold">Payment Method</h2>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       {/* Cash on Delivery */}
                       <label className={`flex flex-col items-center text-center p-5 border-2 rounded-2xl cursor-pointer transition-all ${form.payment === "cod" ? "border-primary bg-primary/5 shadow-sm" : "border-border hover:border-primary/40"}`}>
                         <input type="radio" name="payment" value="cod" checked={form.payment === "cod"} onChange={(e) => update("payment", e.target.value)} className="sr-only" />
@@ -513,16 +805,6 @@ const CheckoutPage = () => {
                         <p className="font-body font-bold text-sm">Pay Online</p>
                         <p className="font-body text-[10px] text-muted-foreground mt-1">UPI, Cards, Wallets</p>
                       </label>
-
-                      {/* Direct Payment */}
-                      {/* <label className={`flex flex-col items-center text-center p-5 border-2 rounded-2xl cursor-pointer transition-all ${form.payment === "direct" ? "border-primary bg-primary/5 shadow-sm" : "border-border hover:border-primary/40"}`}>
-                        <input type="radio" name="payment" value="direct" checked={form.payment === "direct"} onChange={(e) => update("payment", e.target.value)} className="sr-only" />
-                        <div className="w-12 h-12 rounded-full bg-purple-100 flex items-center justify-center mb-3">
-                          <IndianRupee className="w-6 h-6 text-purple-600" />
-                        </div>
-                        <p className="font-body font-bold text-sm">Direct Payment</p>
-                        <p className="font-body text-[10px] text-muted-foreground mt-1">Scan QR / Bank Transfer</p>
-                      </label> */}
                     </div>
 
                     {form.payment === "razorpay" && (
@@ -532,14 +814,6 @@ const CheckoutPage = () => {
                         </div>
                         <p className="font-body text-[11px] text-blue-700 leading-relaxed">
                           <strong>Razorpay Secure:</strong> You will be redirected to the secure gateway for UPI, Cards, and Netbanking.
-                        </p>
-                      </div>
-                    )}
-
-                    {form.payment === "direct" && (
-                      <div className="bg-purple-50 border border-purple-200 rounded-xl p-4 mt-4 animate-fade-in">
-                        <p className="font-body text-[11px] text-purple-700 leading-relaxed">
-                          <strong>Contact Required:</strong> Please contact the restaurant staff at <strong>+91 99999 00000</strong> for the UPI QR code or bank details to complete your direct transfer.
                         </p>
                       </div>
                     )}
@@ -588,7 +862,7 @@ const CheckoutPage = () => {
                   )}
                   {orderType === "dine-in" && (
                     <div className="flex justify-between font-body text-sm">
-                      <span className="text-muted-foreground">Delivery</span>
+                      <span className="text-muted-foreground">Service</span>
                       <span className="font-medium text-green-600">Dine-In (Free)</span>
                     </div>
                   )}
@@ -601,7 +875,7 @@ const CheckoutPage = () => {
                 <Button
                   type="submit"
                   form="checkout-form"
-                  disabled={loading}
+                  disabled={loading || (orderType === "dine-in" && tableNumber === 0)}
                   className="w-full mt-6 bg-primary text-primary-foreground hover:bg-primary/90 font-body font-semibold py-6 text-base rounded-xl transition-all hover-scale active:scale-95 shadow-lg shadow-primary/20"
                 >
                   {loading ? (
@@ -611,17 +885,13 @@ const CheckoutPage = () => {
                     </div>
                   ) : orderType === "dine-in" ? (
                     <span className="flex items-center gap-2">
-                      <UtensilsCrossed className="w-4 h-4" /> Place Table Order — ₹{totalPrice.toFixed(0)}
+                      <UtensilsCrossed className="w-4 h-4" />
+                      {tableNumber === 0 ? "Select a Table First" : `Place Table Order — ₹${totalPrice.toFixed(0)}`}
                     </span>
                   ) : form.payment === "razorpay" ? (
                     <div className="flex items-center justify-center gap-2">
                       <CreditCard className="w-5 h-5" />
                       Pay ₹{grandTotal.toFixed(0)} Online
-                    </div>
-                  ) : form.payment === "direct" ? (
-                    <div className="flex items-center justify-center gap-2">
-                       <IndianRupee className="w-5 h-5" />
-                       Pay ₹{grandTotal.toFixed(0)} Directly
                     </div>
                   ) : (
                     <div className="flex items-center justify-center gap-2">
@@ -644,7 +914,6 @@ const CheckoutPage = () => {
       {successPopup.show && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in-up">
           <div className="relative bg-card border border-border rounded-3xl p-8 max-w-sm w-full mx-4 text-center shadow-2xl">
-            {/* Close button */}
             <button
               onClick={() => { setSuccessPopup({ show: false, orderId: "", type: "" }); navigate("/profile/orders"); }}
               className="absolute top-4 right-4 text-muted-foreground hover:text-foreground transition-colors"
@@ -652,7 +921,6 @@ const CheckoutPage = () => {
               <X className="w-5 h-5" />
             </button>
 
-            {/* Animated check circle */}
             <div className="relative w-24 h-24 mx-auto mb-6">
               <div className="absolute inset-0 bg-green-500/20 rounded-full animate-ping" />
               <div className="relative w-24 h-24 bg-gradient-to-br from-green-400 to-green-600 rounded-full flex items-center justify-center shadow-lg shadow-green-500/30">
@@ -660,7 +928,6 @@ const CheckoutPage = () => {
               </div>
             </div>
 
-            {/* Sparkles */}
             <div className="flex justify-center gap-1 mb-3">
               <Sparkles className="w-5 h-5 text-primary animate-bounce" style={{ animationDelay: "0ms" }} />
               <Sparkles className="w-4 h-4 text-yellow-500 animate-bounce" style={{ animationDelay: "150ms" }} />
@@ -681,7 +948,6 @@ const CheckoutPage = () => {
               <p className="font-body font-bold text-primary text-lg">{successPopup.orderId}</p>
             </div>
 
-            {/* Progress bar auto-dismiss */}
             <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
               <div className="h-full bg-gradient-to-r from-primary to-green-500 rounded-full" style={{ animation: "shrink 3s linear forwards" }} />
             </div>

@@ -31,10 +31,21 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    const status = error?.response?.status;
+
+    if (status === 401) {
+      sessionStorage.removeItem("accessToken");
+
+      if (window.location.pathname !== "/login") {
+        window.location.href = "/login";
+      }
+    }
+
     const message =
       error?.response?.data?.message ||
       error?.message ||
       "Something went wrong";
+
     return Promise.reject(new Error(message));
   }
 );
@@ -162,12 +173,14 @@ export const reservationApi = {
     reservationUserEmail?: string;
   }) => api.post("/reserve/new-reserve", payload),
 
-  getAvailableTables: (params: {
+ getAvailableTables: (payload: {
     noOfGuests: number;
     date: string;
     startTime: string;
     endTime: string;
-  }) => api.post("/reserve/available-table", { params }),
+  }) => api.post("/reserve/available-table", payload),
+
+
 
   updateStatus: (reservationId: string, payload: {
     tableNo?: number;

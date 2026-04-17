@@ -1,8 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useOrders } from "@/context/OrderContext";
 import { useTableOrders, type TableOrder, type TableOrderItem } from "@/context/TableOrderContext";
-import { X, Package, Pencil, Trash2, UtensilsCrossed, Minus, Plus } from "lucide-react";
+import { X, Package, Pencil, Trash2, UtensilsCrossed, Minus, Plus, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -50,41 +50,97 @@ const UserOrders = () => {
   const [editNotes, setEditNotes] = useState("");
   const [editItems, setEditItems] = useState<TableOrderItem[]>([]);
   const [activeTab, setActiveTab] = useState<"online" | "table">("online");
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [forceUpdate, setForceUpdate] = useState(0);
 
+  // Function to refresh all order data
+  const refreshAllOrders = useCallback(() => {
+    if (!user) return;
+
+    setIsRefreshing(true);
+
+    // Get fresh data from contexts
+    const allOrders = getUserOrders(user.id);
+    const onlineOnly = allOrders.filter(o =>
+      String(o.orderType || "Home Delivery").toLowerCase() === "home delivery"
+    );
+    setOrders(onlineOnly);
+
+    setUserTableOrders(
+      tableOrders.filter((o) => o.customerName === user.name)
+    );
+
+    setIsRefreshing(false);
+  }, [user, getUserOrders, tableOrders]);
+
+  // Auto-refresh when page becomes visible (user returns to tab)
   useEffect(() => {
-    if (user) {
-      const allOrders = getUserOrders(user.id);
-      // Filter out table orders from the main orders list to prevent duplicates
-      const onlineOnly = allOrders.filter(o => 
-        String(o.orderType || "Home Delivery").toLowerCase() === "home delivery"
-      );
-      setOrders(onlineOnly);
-      
-      setUserTableOrders(
-        tableOrders.filter((o) => o.customerName === user.name)
-      );
-    }
-
-
-    const handleStorageChange = () => {
-      if (user) {
-        setOrders(getUserOrders(user.id));
-        setUserTableOrders(
-          tableOrders.filter((o) => o.customerName === user.name)
-        );
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        console.log("Page became visible, refreshing orders...");
+        refreshAllOrders();
       }
     };
 
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [refreshAllOrders]);
+
+  // Refresh when component mounts (every time page loads)
+  useEffect(() => {
+    refreshAllOrders();
+  }, [refreshAllOrders]);
+
+  // Listen for navigation events (when user comes back from other pages)
+  useEffect(() => {
+    const handlePopState = () => {
+      console.log("Popstate detected, refreshing orders...");
+      refreshAllOrders();
+    };
+
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [refreshAllOrders]);
+
+  // Listen for storage events and custom events
+  useEffect(() => {
+    const handleStorageChange = () => {
+      console.log("Storage change detected, refreshing orders...");
+      refreshAllOrders();
+    };
+
+    const handleOrderUpdate = () => {
+      console.log("Order update event detected, refreshing orders...");
+      refreshAllOrders();
+    };
+
     window.addEventListener("storage", handleStorageChange);
-    window.addEventListener("ordersUpdated", handleStorageChange);
-    window.addEventListener("tableOrdersUpdated", handleStorageChange);
+    window.addEventListener("ordersUpdated", handleOrderUpdate);
+    window.addEventListener("tableOrdersUpdated", handleOrderUpdate);
+    window.addEventListener("checkoutComplete", handleOrderUpdate);
+    window.addEventListener("orderPlaced", handleOrderUpdate);
 
     return () => {
       window.removeEventListener("storage", handleStorageChange);
-      window.removeEventListener("ordersUpdated", handleStorageChange);
-      window.removeEventListener("tableOrdersUpdated", handleStorageChange);
+      window.removeEventListener("ordersUpdated", handleOrderUpdate);
+      window.removeEventListener("tableOrdersUpdated", handleOrderUpdate);
+      window.removeEventListener("checkoutComplete", handleOrderUpdate);
+      window.removeEventListener("orderPlaced", handleOrderUpdate);
     };
-  }, [user, getUserOrders, tableOrders]);
+  }, [refreshAllOrders]);
+
+  // Update when dependencies change
+  useEffect(() => {
+    if (user) {
+      refreshAllOrders();
+    }
+  }, [user, tableOrders, forceUpdate, refreshAllOrders]);
 
   const canCancelOrder = (order: Order) => {
     return order.status === "pending" || order.status === "preparing";
@@ -92,16 +148,22 @@ const UserOrders = () => {
 
   const handleCancelOrder = (orderId: string) => {
     updateOrderStatus(orderId, "cancelled");
-    setOrders(getUserOrders(user!.id));
+    refreshAllOrders();
     toast.success("Order cancelled successfully");
     setCancelOrderId(null);
+
+    // Dispatch event to notify other components
+    window.dispatchEvent(new Event("ordersUpdated"));
   };
 
   const handleDeleteTableOrder = (orderId: string) => {
     deleteTableOrder(orderId);
-    setUserTableOrders((prev) => prev.filter((o) => o.id !== orderId));
+    refreshAllOrders();
     toast.success("Table order deleted successfully");
     setDeleteOrderId(null);
+
+    // Dispatch event to notify other components
+    window.dispatchEvent(new Event("tableOrdersUpdated"));
   };
 
   const openEditDialog = (order: TableOrder) => {
@@ -138,15 +200,13 @@ const UserOrders = () => {
       items: editItems,
       totalPrice,
     });
-    setUserTableOrders((prev) =>
-      prev.map((o) =>
-        o.id === editOrder.id
-          ? { ...o, tableNumber: editTableNumber, notes: editNotes, items: editItems, totalPrice }
-          : o
-      )
-    );
+
+    refreshAllOrders();
     toast.success("Table order updated successfully");
     setEditOrder(null);
+
+    // Dispatch event to notify other components
+    window.dispatchEvent(new Event("tableOrdersUpdated"));
   };
 
   const totalCount = orders.length + userTableOrders.length;
@@ -166,9 +226,23 @@ const UserOrders = () => {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="font-display text-2xl md:text-3xl font-bold">My Orders</h1>
-        <p className="font-body text-sm text-muted-foreground">{totalCount} total orders</p>
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+        <div>
+          <h1 className="font-display text-2xl md:text-3xl font-bold">My Orders</h1>
+          <p className="font-body text-sm text-muted-foreground mt-1">
+            {totalCount} total orders
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={refreshAllOrders}
+          disabled={isRefreshing}
+          className="gap-2"
+        >
+          <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+          {isRefreshing ? 'Refreshing...' : 'Refresh'}
+        </Button>
       </div>
 
       {/* Tabs */}
@@ -223,10 +297,10 @@ const UserOrders = () => {
                     {order.items.map((item, i) => (
                       <div key={i} className="flex items-center gap-3 bg-muted/40 p-2 rounded-xl border border-border/50">
                         {item.image && (
-                          <img 
-                            src={item.image} 
-                            alt={item.name} 
-                            className="w-12 h-12 rounded-lg object-cover bg-muted" 
+                          <img
+                            src={item.image}
+                            alt={item.name}
+                            className="w-12 h-12 rounded-lg object-cover bg-muted"
                             onError={(e) => (e.currentTarget.src = "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?q=80&w=100&auto=format&fit=crop")}
                           />
                         )}
@@ -308,10 +382,10 @@ const UserOrders = () => {
                     {order.items.map((item, i) => (
                       <div key={i} className="flex items-center gap-3 bg-muted/40 p-2 rounded-xl border border-border/50">
                         {item.image && (
-                          <img 
-                            src={item.image} 
-                            alt={item.name} 
-                            className="w-12 h-12 rounded-lg object-cover bg-muted" 
+                          <img
+                            src={item.image}
+                            alt={item.name}
+                            className="w-12 h-12 rounded-lg object-cover bg-muted"
                             onError={(e) => (e.currentTarget.src = "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?q=80&w=100&auto=format&fit=crop")}
                           />
                         )}

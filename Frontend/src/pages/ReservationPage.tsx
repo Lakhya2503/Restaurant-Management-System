@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { CalendarDays, Clock, Users, LogIn, CheckCircle2, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -6,54 +6,135 @@ import { useAuth } from "@/context/AuthContext";
 import { useOrders } from "@/context/OrderContext";
 import { useNavigate } from "react-router-dom";
 
-const reservationStartSlots = Array.from({ length: 12 }, (_, i) => `${String(i + 8).padStart(2, "0")}:00`);
-const reservationEndSlots = Array.from({ length: 12 }, (_, i) => `${String(i + 9).padStart(2, "0")}:00`);
-const timeToMinutes = (time: string) => {
+// Custom debounce hook
+const useDebounce = <T,>(value: T, delay: number): T => {
+  const [debouncedValue, setDebouncedValue] = useState<T>(value);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+
+  return debouncedValue;
+};
+
+// Constants
+const RESERVATION_START_HOUR = 8;
+const RESERVATION_END_HOUR = 20;
+const MIN_DURATION_MINUTES = 60;
+const MIN_ADVANCE_NOTICE_MINUTES = 30;
+
+const reservationStartSlots = Array.from(
+  { length: RESERVATION_END_HOUR - RESERVATION_START_HOUR },
+  (_, i) => `${String(i + RESERVATION_START_HOUR).padStart(2, "0")}:00`
+);
+
+const reservationEndSlots = Array.from(
+  { length: RESERVATION_END_HOUR - RESERVATION_START_HOUR },
+  (_, i) => `${String(i + RESERVATION_START_HOUR + 1).padStart(2, "0")}:00`
+);
+
+// Utility functions
+const timeToMinutes = (time: string): number => {
   const [hours, minutes] = time.split(":").map(Number);
   return hours * 60 + minutes;
 };
 
-// Helper function to check if a time slot is valid for today
-const isTimeSlotValidForToday = (date: string, time: string) => {
-  const selectedDate = new Date(date);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  // If selected date is today, check if time is in the future
-  if (selectedDate.getTime() === today.getTime()) {
-    const now = new Date();
-    const currentHour = now.getHours();
-    const currentMinute = now.getMinutes();
-    const [selectedHour, selectedMinute] = time.split(":").map(Number);
-
-    if (selectedHour < currentHour) return false;
-    if (selectedHour === currentHour && selectedMinute <= currentMinute) return false;
-  }
-
-  return true;
-};
-
-// Helper to get min date (today)
-const getMinDate = () => {
-  const today = new Date();
-  return today.toISOString().split("T")[0];
-};
-
-// Helper to check if date is today
-const isToday = (dateString: string) => {
+const isToday = (dateString: string): boolean => {
   const date = new Date(dateString);
   const today = new Date();
   return date.toDateString() === today.toDateString();
 };
 
+const getMinDate = (): string => {
+  const today = new Date();
+  return today.toISOString().split("T")[0];
+};
+
+const isValidReservationRange = (startTime: string, endTime: string, date: string): boolean => {
+  if (!startTime || !endTime || !date) return false;
+
+  const startMinutes = timeToMinutes(startTime);
+  const endMinutes = timeToMinutes(endTime);
+
+  // Check business hours
+  if (startMinutes < timeToMinutes("08:00") || endMinutes > timeToMinutes("20:00")) {
+    return false;
+  }
+
+  // Check time order
+  if (startMinutes >= endMinutes) {
+    return false;
+  }
+
+  // Check minimum duration (1 hour)
+  if (endMinutes - startMinutes < MIN_DURATION_MINUTES) {
+    return false;
+  }
+
+  // Check if time is valid for today
+  if (isToday(date)) {
+    const now = new Date();
+    const currentTimeInMinutes = now.getHours() * 60 + now.getMinutes();
+    if (startMinutes <= currentTimeInMinutes + MIN_ADVANCE_NOTICE_MINUTES) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+// Form state interface
+interface ReservationForm {
+  name: string;
+  phone: string;
+  guests: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  notes: string;
+}
+
 const ReservationPage = () => {
   const { user, isLoggedIn } = useAuth();
   const { addReservation, getAvailableTables, getTableRangeForGuests } = useOrders();
   const navigate = useNavigate();
-  const [form, setForm] = useState({ name: "", phone: "", guests: "2", date: "", startTime: "", endTime: "", notes: "" });
-  const [successPopup, setSuccessPopup] = useState<{ show: boolean; bookingId: string; tableNumber?: number }>({
+
+  const [form, setForm] = useState<ReservationForm>({
+    name: "",
+    phone: "",
+    guests: "2",
+    date: "",
+    startTime: "",
+    endTime: "",
+    notes: ""
+  });
+
+  const [successPopup, setSuccessPopup] = useState<{
+    show: boolean;
+    bookingId: string;
+    tableNumber?: number
+  }>({
+    show: false,
+    bookingId: "",
     tableNumber: undefined,
   });
+
+  const [availableTables, setAvailableTables] = useState<number[]>([]);
+  const [isCheckingTables, setIsCheckingTables] = useState(false);
+
+  const guestsCount = parseInt(form.guests, 10);
+  const tableRange = getTableRangeForGuests(guestsCount);
+
+  // Debounce form fields to prevent excessive API calls
+  const debouncedDate = useDebounce(form.date, 500);
+  const debouncedStartTime = useDebounce(form.startTime, 500);
+  const debouncedEndTime = useDebounce(form.endTime, 500);
 
   // Prefill form with user data if logged in
   useEffect(() => {
@@ -66,163 +147,94 @@ const ReservationPage = () => {
     }
   }, [user]);
 
-  const guestsCount = parseInt(form.guests, 10);
-  const tableRange = getTableRangeForGuests(guestsCount);
-  const [availableTables, setAvailableTables] = useState<number[]>([]);
-  const [isCheckingTables, setIsCheckingTables] = useState(false);
-
   // Get filtered start time slots based on date
-  const getFilteredStartSlots = () => {
+  const filteredStartSlots = useMemo(() => {
     if (!form.date) return reservationStartSlots;
 
     if (isToday(form.date)) {
       const now = new Date();
-      const currentHour = now.getHours();
-      const currentMinute = now.getMinutes();
-      const currentTimeInMinutes = currentHour * 60 + currentMinute;
+      const currentTimeInMinutes = now.getHours() * 60 + now.getMinutes();
 
       return reservationStartSlots.filter(slot => {
         const slotMinutes = timeToMinutes(slot);
         // Allow slots that are at least 30 minutes from now
-        return slotMinutes > currentTimeInMinutes + 30;
+        return slotMinutes > currentTimeInMinutes + MIN_ADVANCE_NOTICE_MINUTES;
       });
     }
 
     return reservationStartSlots;
-  };
+  }, [form.date]);
 
   // Get filtered end time slots based on start time and date
-  const getFilteredEndSlots = () => {
-    let filtered = reservationEndSlots;
+  const filteredEndSlots = useMemo(() => {
+    let filtered = [...reservationEndSlots];
 
     // Filter by start time
     if (form.startTime) {
-      filtered = filtered.filter((slot) => timeToMinutes(slot) > timeToMinutes(form.startTime));
+      filtered = filtered.filter(
+        (slot) => timeToMinutes(slot) > timeToMinutes(form.startTime)
+      );
     }
 
     // Filter by date if today
     if (form.date && isToday(form.date) && form.startTime) {
       const now = new Date();
-      const currentHour = now.getHours();
-      const currentMinute = now.getMinutes();
-      const currentTimeInMinutes = currentHour * 60 + currentMinute;
+      const currentTimeInMinutes = now.getHours() * 60 + now.getMinutes();
       const startTimeMinutes = timeToMinutes(form.startTime);
 
       // If start time is in the future, ensure end time is also valid
       if (startTimeMinutes > currentTimeInMinutes) {
-        // End time must be at least 1 hour after start time
         filtered = filtered.filter(slot => {
           const endMinutes = timeToMinutes(slot);
-          return endMinutes > startTimeMinutes && (endMinutes - startTimeMinutes) >= 60;
+          return endMinutes > startTimeMinutes &&
+                 (endMinutes - startTimeMinutes) >= MIN_DURATION_MINUTES;
         });
       }
     }
 
     return filtered;
-  };
+  }, [form.startTime, form.date]);
 
+  // Fetch available tables with debouncing
   useEffect(() => {
     const fetchTables = async () => {
-      if (form.date && form.startTime && form.endTime) {
-        setIsCheckingTables(true);
-        try {
-          const tables = await getAvailableTables(form.date, form.startTime, form.endTime, guestsCount);
-          setAvailableTables(tables);
-        } catch (error) {
-          console.error(error);
-          setAvailableTables([]);
-        } finally {
-          setIsCheckingTables(false);
-        }
-      } else {
+      // Only fetch if all required fields have valid values
+      if (!debouncedDate || !debouncedStartTime || !debouncedEndTime) {
+        if (availableTables.length !== 0) setAvailableTables([]);
+        return;
+      }
+
+      // Validate time range before making API call
+      if (!isValidReservationRange(debouncedStartTime, debouncedEndTime, debouncedDate)) {
+        if (availableTables.length !== 0) setAvailableTables([]);
+        return;
+      }
+
+      setIsCheckingTables(true);
+
+      try {
+        const tables = await getAvailableTables(
+          debouncedDate,
+          debouncedStartTime,
+          debouncedEndTime,
+          guestsCount
+        );
+        setAvailableTables(tables);
+      } catch (error) {
+        console.error("Error fetching available tables:", error);
         setAvailableTables([]);
+        toast.error("Failed to check table availability. Please try again.");
+      } finally {
+        setIsCheckingTables(false);
       }
     };
+
     fetchTables();
-  }, [form.date, form.startTime, form.endTime, guestsCount, getAvailableTables]);
+  }, [debouncedDate, debouncedStartTime, debouncedEndTime, guestsCount, getAvailableTables]);
 
   const hasSlotSelection = Boolean(form.date && form.startTime && form.endTime);
 
-  const isValidReservationRange = (startTime: string, endTime: string, date: string) => {
-    // Basic time range validation
-    if (startTime < "08:00" || endTime > "20:00") {
-      return false;
-    }
-
-    if (timeToMinutes(startTime) >= timeToMinutes(endTime)) {
-      return false;
-    }
-
-    // Check if duration is at least 1 hour
-    if (timeToMinutes(endTime) - timeToMinutes(startTime) < 60) {
-      return false;
-    }
-
-    // Check if time is valid for today
-    if (isToday(date)) {
-      const now = new Date();
-      const currentTimeInMinutes = now.getHours() * 60 + now.getMinutes();
-      const startTimeMinutes = timeToMinutes(startTime);
-
-      // Start time must be at least 30 minutes from now
-      if (startTimeMinutes <= currentTimeInMinutes + 30) {
-        return false;
-      }
-    }
-
-    return true;
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    console.log(form)
-
-    if (!form.name || !form.phone || !form.date || !form.startTime || !form.endTime) {
-      toast.error("Please fill all required fields");
-      return;
-    }
-
-    if (!isValidReservationRange(form.startTime, form.endTime, form.date)) {
-      toast.error("Please select a valid time range. Minimum 1 hour duration. For today, please select a time at least 30 minutes from now.");
-      return;
-    }
-
-    if (availableTables.length === 0) {
-      toast.error("No tables available for this date/time range. Please choose another slot.");
-      return;
-    }
-
-    let newReservation;
-    try {
-        // Automatically assign the first available table
-        const assignedTable = availableTables[0];
-        newReservation = await addReservation({
-          userId: user!.id,
-          name: form.name,
-          email: user?.email,
-          phone: form.phone,
-          guests: guestsCount,
-          date: form.date,
-          time: form.startTime,
-          startTime: form.startTime,
-          endTime: form.endTime,
-          notes: form.notes,
-          status: "pending",
-        }, assignedTable);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Unable to reserve table right now");
-      return;
-    }
-
-    setSuccessPopup({ show: true, bookingId: newReservation.id, tableNumber: newReservation.assignedTable });
-    setTimeout(() => {
-      setSuccessPopup({ show: false, bookingId: "", tableNumber: undefined });
-      navigate("/profile/reservations");
-    }, 3000);
-  };
-
-  const update = (field: string, value: string) => {
+  const updateField = useCallback((field: keyof ReservationForm, value: string) => {
     setForm((prev) => {
       const next = { ...prev, [field]: value };
 
@@ -232,18 +244,14 @@ const ReservationPage = () => {
       }
 
       // Reset start time and end time if date changes and it's today with invalid times
-      if (field === "date" && value) {
-        if (isToday(value)) {
-          const now = new Date();
-          const currentHour = now.getHours();
-          const currentMinute = now.getMinutes();
-          const currentTimeInMinutes = currentHour * 60 + currentMinute;
+      if (field === "date" && value && isToday(value)) {
+        const now = new Date();
+        const currentTimeInMinutes = now.getHours() * 60 + now.getMinutes();
 
-          // Check if current start time is valid for today
-          if (next.startTime && timeToMinutes(next.startTime) <= currentTimeInMinutes + 30) {
-            next.startTime = "";
-            next.endTime = "";
-          }
+        // Check if current start time is valid for today
+        if (next.startTime && timeToMinutes(next.startTime) <= currentTimeInMinutes + MIN_ADVANCE_NOTICE_MINUTES) {
+          next.startTime = "";
+          next.endTime = "";
         }
       }
 
@@ -259,6 +267,71 @@ const ReservationPage = () => {
 
       return next;
     });
+  }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    // Validate all required fields
+    if (!form.name || !form.phone || !form.date || !form.startTime || !form.endTime) {
+      toast.error("Please fill all required fields");
+      return;
+    }
+
+    // Validate phone number format (basic)
+    const phoneRegex = /^[0-9+\-\s()]{10,15}$/;
+    if (!phoneRegex.test(form.phone)) {
+      toast.error("Please enter a valid phone number");
+      return;
+    }
+
+    // Validate time range
+    if (!isValidReservationRange(form.startTime, form.endTime, form.date)) {
+      toast.error("Please select a valid time range. Minimum 1 hour duration. For today, please select a time at least 30 minutes from now.");
+      return;
+    }
+
+    // Check table availability
+    if (availableTables.length === 0) {
+      toast.error("No tables available for this date/time range. Please choose another slot.");
+      return;
+    }
+
+    // Create reservation
+    try {
+      const assignedTable = availableTables[0];
+      const newReservation = await addReservation(
+        {
+          userId: user!.id,
+          name: form.name,
+          email: user?.email,
+          phone: form.phone,
+          guests: guestsCount,
+          date: form.date,
+          time: form.startTime,
+          startTime: form.startTime,
+          endTime: form.endTime,
+          notes: form.notes,
+          status: "pending",
+        },
+        assignedTable
+      );
+
+      setSuccessPopup({
+        show: true,
+        bookingId: newReservation.id,
+        tableNumber: newReservation.assignedTable
+      });
+
+      // Auto redirect after 3 seconds
+      setTimeout(() => {
+        setSuccessPopup({ show: false, bookingId: "", tableNumber: undefined });
+        navigate("/profile/reservations");
+      }, 3000);
+
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to reserve table right now");
+    }
   };
 
   // Require login before making reservation
@@ -298,9 +371,6 @@ const ReservationPage = () => {
     );
   }
 
-  const filteredStartSlots = getFilteredStartSlots();
-  const filteredEndSlots = getFilteredEndSlots();
-
   return (
     <main className="min-h-screen bg-background">
       {/* Hero Section */}
@@ -337,38 +407,66 @@ const ReservationPage = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
             <div>
               <label className="font-body text-sm font-medium mb-1.5 block">Name *</label>
-              <input value={form.name} onChange={(e) => update("name", e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="Your name" />
+              <input
+                type="text"
+                value={form.name}
+                onChange={(e) => updateField("name", e.target.value)}
+                className="w-full px-4 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+                placeholder="Your name"
+                required
+              />
             </div>
             <div>
               <label className="font-body text-sm font-medium mb-1.5 block">Phone *</label>
-              <input value={form.phone} onChange={(e) => update("phone", e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="+91 98765 43210" />
+              <input
+                type="tel"
+                value={form.phone}
+                onChange={(e) => updateField("phone", e.target.value)}
+                className="w-full px-4 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+                placeholder="+91 98765 43210"
+                required
+              />
             </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
             <div>
-              <label className="font-body text-sm font-medium mb-1.5 flex items-center gap-1.5"><Users className="w-4 h-4 text-primary" /> Guests</label>
-              <select value={form.guests} onChange={(e) => update("guests", e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
-                {[1, 2, 3, 4, 5, 6, 7, 8, 10, 12].map((n) => <option key={n} value={n}>{n} {n === 1 ? "guest" : "guests"}</option>)}
+              <label className="font-body text-sm font-medium mb-1.5 flex items-center gap-1.5">
+                <Users className="w-4 h-4 text-primary" /> Guests
+              </label>
+              <select
+                value={form.guests}
+                onChange={(e) => updateField("guests", e.target.value)}
+                className="w-full px-4 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+              >
+                {[1, 2, 3, 4, 5, 6, 7, 8, 10, 12].map((n) => (
+                  <option key={n} value={n}>{n} {n === 1 ? "guest" : "guests"}</option>
+                ))}
               </select>
             </div>
             <div>
-              <label className="font-body text-sm font-medium mb-1.5 flex items-center gap-1.5"><CalendarDays className="w-4 h-4 text-primary" /> Date *</label>
+              <label className="font-body text-sm font-medium mb-1.5 flex items-center gap-1.5">
+                <CalendarDays className="w-4 h-4 text-primary" /> Date *
+              </label>
               <input
                 type="date"
                 value={form.date}
-                onChange={(e) => update("date", e.target.value)}
+                onChange={(e) => updateField("date", e.target.value)}
                 min={getMinDate()}
-                className="w-full px-4 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                className="w-full px-4 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+                required
               />
             </div>
             <div>
-              <label className="font-body text-sm font-medium mb-1.5 flex items-center gap-1.5"><Clock className="w-4 h-4 text-primary" /> Start *</label>
+              <label className="font-body text-sm font-medium mb-1.5 flex items-center gap-1.5">
+                <Clock className="w-4 h-4 text-primary" /> Start *
+              </label>
               <select
                 value={form.startTime}
-                onChange={(e) => update("startTime", e.target.value)}
-                className="w-full px-4 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                onChange={(e) => updateField("startTime", e.target.value)}
+                className="w-full px-4 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={!form.date}
+                required
               >
                 <option value="">Select start time</option>
                 {filteredStartSlots.map((slot) => (
@@ -380,12 +478,15 @@ const ReservationPage = () => {
               )}
             </div>
             <div>
-              <label className="font-body text-sm font-medium mb-1.5 flex items-center gap-1.5"><Clock className="w-4 h-4 text-primary" /> End *</label>
+              <label className="font-body text-sm font-medium mb-1.5 flex items-center gap-1.5">
+                <Clock className="w-4 h-4 text-primary" /> End *
+              </label>
               <select
                 value={form.endTime}
-                onChange={(e) => update("endTime", e.target.value)}
-                className="w-full px-4 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                onChange={(e) => updateField("endTime", e.target.value)}
+                className="w-full px-4 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={!form.startTime}
+                required
               >
                 <option value="">Select end time</option>
                 {filteredEndSlots.map((slot) => (
@@ -398,31 +499,38 @@ const ReservationPage = () => {
             </div>
           </div>
 
-          {/* Available Tables Section - Display only, no selection */}
+          {/* Available Tables Section */}
           {hasSlotSelection && (
             <div className="rounded-xl border border-border bg-muted/30 p-4 space-y-2">
               {isCheckingTables ? (
-                <p className="font-body text-xs text-muted-foreground animate-pulse">Checking availability...</p>
+                <div className="flex items-center justify-center py-4">
+                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
+                  <p className="font-body text-xs text-muted-foreground ml-2">Checking availability...</p>
+                </div>
               ) : availableTables.length === 0 ? (
-                <p className="font-body text-xs text-destructive font-medium">
-                  No tables are available for this slot. Please choose another time.
-                </p>
+                <div className="text-center py-2">
+                  <p className="font-body text-sm text-destructive font-medium">
+                    No tables are available for this slot. Please choose another time.
+                  </p>
+                </div>
               ) : (
                 <>
                   <p className="font-body text-xs text-muted-foreground mb-3">
-                    Available Tables
+                    Available Tables ({availableTables.length})
                   </p>
                   <div className="flex flex-wrap gap-2">
                     {availableTables.map((tableNo) => (
                       <div
                         key={tableNo}
-                        className="font-body text-xs px-3 py-1.5 rounded-full border border-primary/30 bg-primary/5 text-primary"
+                        className="font-body text-xs px-3 py-1.5 rounded-full border border-primary/30 bg-primary/5 text-primary font-medium"
                       >
                         Table #{tableNo}
                       </div>
                     ))}
                   </div>
-
+                  <p className="font-body text-[11px] text-muted-foreground mt-2">
+                    Table #{tableRange.min} - #{tableRange.max} suitable for {guestsCount} guests
+                  </p>
                 </>
               )}
             </div>
@@ -430,10 +538,20 @@ const ReservationPage = () => {
 
           <div>
             <label className="font-body text-sm font-medium mb-1.5 block">Special Requests</label>
-            <textarea value={form.notes} onChange={(e) => update("notes", e.target.value)} rows={3} className="w-full px-4 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none" placeholder="Any dietary needs or special requests?" />
+            <textarea
+              value={form.notes}
+              onChange={(e) => updateField("notes", e.target.value)}
+              rows={3}
+              className="w-full px-4 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all resize-none"
+              placeholder="Any dietary needs or special requests?"
+            />
           </div>
 
-          <Button type="submit" className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body font-semibold py-3 text-base" disabled={hasSlotSelection && availableTables.length === 0}>
+          <Button
+            type="submit"
+            className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body font-semibold py-3 text-base transition-all"
+            disabled={hasSlotSelection && availableTables.length === 0}
+          >
             Confirm Reservation
           </Button>
         </form>
@@ -443,15 +561,16 @@ const ReservationPage = () => {
       {successPopup.show && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in-up">
           <div className="relative bg-card border border-border rounded-3xl p-8 max-w-sm w-full mx-4 text-center shadow-2xl">
-            {/* Close button */}
             <button
-              onClick={() => { setSuccessPopup({ show: false, bookingId: "", tableNumber: undefined }); navigate("/profile/reservations"); }}
+              onClick={() => {
+                setSuccessPopup({ show: false, bookingId: "", tableNumber: undefined });
+                navigate("/profile/reservations");
+              }}
               className="absolute top-4 right-4 text-muted-foreground hover:text-foreground transition-colors"
             >
               <X className="w-5 h-5" />
             </button>
 
-            {/* Animated check circle */}
             <div className="relative w-24 h-24 mx-auto mb-6">
               <div className="absolute inset-0 bg-green-500/20 rounded-full animate-ping" />
               <div className="relative w-24 h-24 bg-gradient-to-br from-green-400 to-green-600 rounded-full flex items-center justify-center shadow-lg shadow-green-500/30">
@@ -459,7 +578,6 @@ const ReservationPage = () => {
               </div>
             </div>
 
-            {/* Sparkles */}
             <div className="flex justify-center gap-1 mb-3">
               <Sparkles className="w-5 h-5 text-primary animate-bounce" style={{ animationDelay: "0ms" }} />
               <Sparkles className="w-4 h-4 text-yellow-500 animate-bounce" style={{ animationDelay: "150ms" }} />
@@ -483,7 +601,6 @@ const ReservationPage = () => {
               )}
             </div>
 
-            {/* Progress bar auto-dismiss */}
             <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
               <div className="h-full bg-gradient-to-r from-primary to-green-500 rounded-full" style={{ animation: "shrink 3s linear forwards" }} />
             </div>

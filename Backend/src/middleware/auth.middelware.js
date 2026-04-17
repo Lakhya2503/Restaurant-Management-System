@@ -30,7 +30,8 @@ export const verifyJWT = asyncHandler(async (req, res, next) => {
 })
 
 export const verifyAdmin = asyncHandler(async (req, res, next) => {
-  if (!req.user) {
+ try {
+     if (!req.user) {
     // If verifyJWT wasn't called before this, we must do it now
     const token =
       req.cookies?.accessToken ||
@@ -54,4 +55,7 @@ export const verifyAdmin = asyncHandler(async (req, res, next) => {
   }
 
   next();
+ } catch (error) {
+    throw new ApiError(401, error.message || "Unauthorized requrest")
+ }
 });

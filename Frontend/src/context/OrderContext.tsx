@@ -8,9 +8,7 @@ import React, {
 import { orderApi, paymentApi, reservationApi } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 
-// ---------------------------------------------------------------------------
 // Types
-// ---------------------------------------------------------------------------
 export interface Order {
   id: string;
   userId: string;
@@ -60,43 +58,22 @@ interface TableRange {
 interface OrderContextType {
   orders: Order[];
   reservations: Reservation[];
-  addOrder: (
-    orderData: Omit<Order, "id" | "createdAt">
-  ) => Promise<{ order: Order; payment: any }>;
-  addReservation: (
-    reservation: Omit<Reservation, "id" | "createdAt" | "assignedTable">,
-    tableId?: number
-  ) => Promise<Reservation>;
-  updateOrderStatus: (
-    orderId: string,
-    status: Order["status"],
-    cancellationReason?: string
-  ) => void;
-  updateReservationStatus: (
-    reservationId: string,
-    status: Reservation["status"]
-  ) => void;
-  assignTableToReservation: (
-    reservationId: string,
-    tableNumber: number
-  ) => void;
+  addOrder: (orderData: Omit<Order, "id" | "createdAt">) => Promise<{ order: Order; payment: any }>;
+  addReservation: (reservation: Omit<Reservation, "id" | "createdAt" | "assignedTable">, tableId?: number) => Promise<Reservation>;
+  updateOrderStatus: (orderId: string, status: Order["status"], cancellationReason?: string) => void;
+  updateReservationStatus: (reservationId: string, status: Reservation["status"]) => void;
+  assignTableToReservation: (reservationId: string, tableNumber: number) => void;
   getTableRangeForGuests: (guests: number) => TableRange;
-  getAvailableTables: (
-    date: string,
-    startTime: string,
-    endTime: string,
-    guests: number
-  ) => Promise<number[]>;
+  getAvailableTables: (date: string, startTime: string, endTime: string, guests: number) => Promise<number[]>;
   getUserReservations: (userId: string) => Reservation[];
   cancelOrder: (orderId: string, reason?: string) => Promise<void>;
   getReservationSummary: () => Promise<Record<string, number>>;
+  refreshData: () => Promise<void>;
 }
 
 const OrderContext = createContext<OrderContextType | undefined>(undefined);
 
-// ---------------------------------------------------------------------------
-// Time helpers (unchanged from original)
-// ---------------------------------------------------------------------------
+// Helper functions
 const timeToMinutes = (time: string) => {
   const [hours, minutes] = time.split(":").map(Number);
   return hours * 60 + minutes;
@@ -125,13 +102,9 @@ const intervalsOverlap = (
   return aStart < bEnd && bStart < aEnd;
 };
 
-// ---------------------------------------------------------------------------
-// Helper: map a raw backend order to our frontend Order shape
-// ---------------------------------------------------------------------------
+// Mapping functions
 function mapBackendOrder(raw: Record<string, unknown>): Order {
   const rawItems = Array.isArray(raw.items) ? (raw.items as Record<string, unknown>[]) : [];
-
-  // Safely handle populated userId
   const userObj = (typeof raw.userId === "object" && raw.userId !== null)
     ? (raw.userId as Record<string, unknown>)
     : {};
@@ -139,11 +112,7 @@ function mapBackendOrder(raw: Record<string, unknown>): Order {
   const actualUserId = String(raw.userId?._id ?? raw.userId ?? raw.user ?? "");
   const actualUserName = String(userObj.fullName ?? userObj.name ?? "");
   const actualUserPhone = String(userObj.phoneNumber ?? userObj.phone ?? "");
-
-  // Status mapping
   const rawStatus = String(raw.orderStatus ?? raw.status ?? "pending").toLowerCase();
-
-  // Payment mapping
   const paymentObj = (typeof raw.paymentId === "object" && raw.paymentId !== null)
     ? (raw.paymentId as Record<string, unknown>)
     : null;
@@ -165,10 +134,9 @@ function mapBackendOrder(raw: Record<string, unknown>): Order {
         image: String(itemNode.itemImage ?? itemNode.image ?? item.image ?? ""),
       };
     }),
-    totalPrice: (function() {
+    totalPrice: (() => {
       const val = Number(paymentObj?.paymentAmount ?? raw.totalAmount ?? raw.totalPrice ?? raw.total ?? 0);
       if (val > 0) return val;
-      // Re-calculate if zero
       return rawItems.reduce((acc, i) => {
         const itemNode = (typeof i.itemId === "object" && i.itemId !== null) ? (i.itemId as any) : {};
         const p = Number(itemNode.priceOfItem ?? itemNode.price ?? i.price ?? 0);
@@ -194,7 +162,6 @@ function mapBackendReservation(raw: Record<string, unknown>): Reservation {
   const start = String(raw.startTime || "");
   const end = String(raw.endTime || "");
 
-  // Format dates to HH:mm for frontend if they are full ISO strings
   const formatTime = (timeStr: string) => {
     if (timeStr.includes("T")) {
       const d = new Date(timeStr);
@@ -221,83 +188,79 @@ function mapBackendReservation(raw: Record<string, unknown>): Reservation {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Provider
-// ---------------------------------------------------------------------------
+// Helper function to dispatch refresh events
+const dispatchRefreshEvents = () => {
+  window.dispatchEvent(new Event("ordersUpdated"));
+  window.dispatchEvent(new Event("reservationsUpdated"));
+  window.dispatchEvent(new Event("dataRefreshed"));
+  window.dispatchEvent(new Event("storage"));
+};
+
 export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
-  const { user, isLoggedIn } = useAuth();
+  const { user, isLoggedIn, refreshUser } = useAuth();
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [reservations, setReservations] = useState<Reservation[]>([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const [orders, setOrders] = useState<Order[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("orders") ?? "[]");
-    } catch {
-      return [];
-    }
-  });
-
-  const [reservations, setReservations] = useState<Reservation[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("reservations") ?? "[]");
-    } catch {
-      return [];
-    }
-  });
-
-  // Persist reservations to localStorage (no backend endpoint yet)
-  useEffect(() => {
-    if (reservations.length > 0) {
-      localStorage.setItem("reservations", JSON.stringify(reservations));
-    }
-  }, [reservations]);
-
-  // ---------------------------------------------------------------------------
-  // Fetch user orders AND reservations from backend when logged in
-  // ---------------------------------------------------------------------------
-  useEffect(() => {
+  // Fetch user orders and reservations from backend when logged in
+  const fetchData = useCallback(async () => {
     if (!isLoggedIn) return;
 
-    (async () => {
-      try {
-        // Orders
-        const ordRes = user?.role === "admin"
-          ? await orderApi.getAllOrders()
-          : await orderApi.getUserOrders();
+    if (isRefreshing) return;
+    setIsRefreshing(true);
 
-        const rawO: Record<string, unknown>[] =
-          ordRes.data?.data?.orders ?? ordRes.data?.data ?? ordRes.data ?? [];
-        if (Array.isArray(rawO)) {
-          setOrders(rawO.map(mapBackendOrder));
-        }
+    try {
+      const [ordRes, resRes] = await Promise.all([
+        user?.role === "admin" ? orderApi.getAllOrders() : orderApi.getUserOrders(),
+        user?.role === "admin" ? reservationApi.getAllReservations() : reservationApi.getUserReservations()
+      ]);
 
-        // Reservations
-        const resRes = user?.role === "admin"
-          ? await reservationApi.getAllReservations()
-          : await reservationApi.getUserReservations();
-
-        const rawR: Record<string, unknown>[] =
-          resRes.data?.data ?? resRes.data ?? [];
-
-          console.log("rawR",rawR)
-
-        if (Array.isArray(rawR)) {
-          setReservations(rawR.map(mapBackendReservation));
-        }
-      } catch (err) {
-        console.error("Failed to fetch data from backend", err);
+      const rawO: Record<string, unknown>[] = ordRes.data?.data?.orders ?? ordRes.data?.data ?? ordRes.data ?? [];
+      if (Array.isArray(rawO)) {
+        setOrders(rawO.map(mapBackendOrder));
       }
-    })();
-  }, [isLoggedIn, user?.id, user?.role]);
 
-  // ---------------------------------------------------------------------------
-  // addOrder — POST to backend then update local state
-  // ---------------------------------------------------------------------------
+      const rawR: Record<string, unknown>[] = resRes.data?.data ?? resRes.data ?? [];
+      console.log("rawR", rawR);
+
+      if (Array.isArray(rawR)) {
+        setReservations(rawR.map(mapBackendReservation));
+      }
+    } catch (err) {
+      console.error("Failed to fetch data from backend", err);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [isLoggedIn, user?.role, isRefreshing]);
+
+  // Refresh data function exposed to components
+  const refreshData = useCallback(async () => {
+    await fetchData();
+    if (refreshUser) await refreshUser();
+    dispatchRefreshEvents();
+  }, [fetchData, refreshUser]);
+
+  // Initial fetch and refresh on user change
+  useEffect(() => {
+    fetchData();
+  }, [fetchData, isLoggedIn, user?.id, user?.role]);
+
+  // Set up auto-refresh interval (optional - refreshes every 30 seconds)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        fetchData();
+      }
+    }, 30000); // Refresh every 30 seconds
+
+    return () => clearInterval(interval);
+  }, [fetchData]);
+
   const addOrder = useCallback(
     async (orderData: Omit<Order, "id" | "createdAt">): Promise<{ order: Order; payment: any }> => {
-      // Determine order type from context (delivery if address present)
       const isDelivery = Boolean(orderData.contact?.address);
-
       let newOrder: Order;
       let paymentData: any = null;
 
@@ -313,7 +276,6 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
             address: orderData.contact.address,
           });
         } else {
-          // Shouldn't reach here via addOrder for table — see addTableOrder
           res = await orderApi.createHomeDelivery({
             typeOfOrder: "Home Delivery",
             items: orderData.items.map((i) => ({
@@ -343,14 +305,13 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
 
           newOrder = mappedOrder;
         } else {
-           newOrder = {
-              ...orderData,
-              id: `ORD${Date.now()}`,
-              createdAt: new Date().toISOString(),
-           };
+          newOrder = {
+            ...orderData,
+            id: `ORD${Date.now()}`,
+            createdAt: new Date().toISOString(),
+          };
         }
       } catch {
-        // Offline fallback — store locally
         newOrder = {
           ...orderData,
           id: `ORD${Date.now()}`,
@@ -359,14 +320,16 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
       }
 
       setOrders((prev) => [newOrder, ...prev]);
+
+      // Refresh data from backend
+      await fetchData();
+      dispatchRefreshEvents();
+
       return { order: newOrder, payment: paymentData };
     },
-    []
+    [fetchData]
   );
 
-  // ---------------------------------------------------------------------------
-  // cancelOrder
-  // ---------------------------------------------------------------------------
   const cancelOrder = useCallback(async (orderId: string, reason?: string) => {
     try {
       await orderApi.cancelOrder(orderId, reason ? { cancellationReason: reason } : undefined);
@@ -378,15 +341,14 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
         o.id === orderId ? { ...o, status: "cancelled", ...(reason && { cancellationReason: reason }) } : o
       )
     );
-    window.dispatchEvent(new Event("ordersUpdated"));
-  }, []);
 
-  // ---------------------------------------------------------------------------
-  // Reservation helpers (local only — no backend endpoint wired yet)
-  // ---------------------------------------------------------------------------
+    // Refresh data from backend
+    await fetchData();
+    dispatchRefreshEvents();
+  }, [fetchData]);
+
   const getTableRangeForGuests = useCallback((guests: number): TableRange => {
-    const safeGuests =
-      Number.isFinite(guests) && guests > 0 ? Math.floor(guests) : 1;
+    const safeGuests = Number.isFinite(guests) && guests > 0 ? Math.floor(guests) : 1;
     if (safeGuests === 1) return { start: 1, end: 5 };
     const start = 6 + (safeGuests - 2) * 15;
     return { start, end: start + 14 };
@@ -401,11 +363,11 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
           startTime,
           endTime
         });
-        const raw = res.data?.data ?? res.data;
+        const raw = res?.data?.data ?? res.data;
+        console.log(raw)
         return raw.freeTables || [];
       } catch (err) {
         console.error("Failed to fetch available tables from backend", err);
-        // Fallback to local calculation if backend fails
         const range = getTableRangeForGuests(guests);
         const reservedTableSet = new Set(
           reservations
@@ -438,14 +400,10 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
       reservationData: Omit<Reservation, "id" | "createdAt" | "assignedTable">,
       tableId?: number
     ): Promise<Reservation> => {
-      const normalizedStart =
-        reservationData.startTime || reservationData.time;
-      const normalizedEnd =
-        reservationData.endTime || addMinutesToTime(normalizedStart, 60);
+      const normalizedStart = reservationData.startTime || reservationData.time;
+      const normalizedEnd = reservationData.endTime || addMinutesToTime(normalizedStart, 60);
 
-      if (
-        timeToMinutes(normalizedStart) >= timeToMinutes(normalizedEnd)
-      ) {
+      if (timeToMinutes(normalizedStart) >= timeToMinutes(normalizedEnd)) {
         throw new Error("End time must be later than start time.");
       }
 
@@ -457,9 +415,7 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
       );
 
       if (availableTables.length === 0) {
-        throw new Error(
-          "No tables available for the selected date/time slot."
-        );
+        throw new Error("No tables available for the selected date/time slot.");
       }
 
       const assignedTable = tableId || availableTables[0];
@@ -480,12 +436,14 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
         const raw = res.data?.data ?? res.data;
         const newRes = mapBackendReservation(raw as Record<string, unknown>);
         setReservations((prev) => [newRes, ...prev]);
-        window.dispatchEvent(new Event("reservationsUpdated"));
+
+        // Refresh data from backend
+        await fetchData();
+        dispatchRefreshEvents();
+
         return newRes;
       } catch (error) {
-        // Fallback or rethrow
         console.error("Backend reservation failed, falling back to local", error);
-
         const newReservation: Reservation = {
           ...reservationData,
           time: normalizedStart,
@@ -496,27 +454,25 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
           assignedTable,
           status: "pending"
         };
-
         setReservations((prev) => [newReservation, ...prev]);
-        window.dispatchEvent(new Event("reservationsUpdated"));
+
+        // Refresh data from backend
+        await fetchData();
+        dispatchRefreshEvents();
+
         return newReservation;
       }
     },
-    [getAvailableTables]
+    [getAvailableTables, fetchData]
   );
 
   const updateOrderStatus = useCallback(
-    async (
-      orderId: string,
-      status: Order["status"],
-      cancellationReason?: string
-    ) => {
+    async (orderId: string, status: Order["status"], cancellationReason?: string) => {
       try {
         await orderApi.updateStatus(orderId, status, cancellationReason);
       } catch (err) {
         console.error("Failed to update status on backend:", err);
       }
-
       setOrders((prev) =>
         prev.map((o) =>
           o.id === orderId
@@ -524,14 +480,16 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
             : o
         )
       );
-      window.dispatchEvent(new Event("ordersUpdated"));
+
+      // Refresh data from backend
+      await fetchData();
+      dispatchRefreshEvents();
     },
-    []
+    [fetchData]
   );
 
   const updateReservationStatus = useCallback(
     async (reservationId: string, status: Reservation["status"]) => {
-      // Map frontend status to backend status
       const statusMap: Record<string, string> = {
         pending: "Pending",
         confirmed: "Confirm",
@@ -550,9 +508,12 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
       setReservations((prev) =>
         prev.map((r) => (r.id === reservationId ? { ...r, status } : r))
       );
-      window.dispatchEvent(new Event("reservationsUpdated"));
+
+      // Refresh data from backend
+      await fetchData();
+      dispatchRefreshEvents();
     },
-    []
+    [fetchData]
   );
 
   const assignTableToReservation = useCallback(
@@ -560,20 +521,22 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
       try {
         await reservationApi.updateStatus(reservationId, {
           tableNo: tableNumber,
-          tableReservationStatus: "Confirm" // Usually assigning a table confirms it
+          tableReservationStatus: "Confirm"
         });
       } catch (err) {
         console.error("Failed to assign table on backend", err);
       }
-
       setReservations((prev) =>
         prev.map((r) =>
           r.id === reservationId ? { ...r, assignedTable: tableNumber, status: "confirmed" } : r
         )
       );
-      window.dispatchEvent(new Event("reservationsUpdated"));
+
+      // Refresh data from backend
+      await fetchData();
+      dispatchRefreshEvents();
     },
-    []
+    [fetchData]
   );
 
   const getUserOrders = useCallback(
@@ -582,8 +545,7 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 
   const getUserReservations = useCallback(
-    (userId: string) =>
-      reservations.filter((r) => r.userId === userId),
+    (userId: string) => reservations.filter((r) => r.userId === userId),
     [reservations]
   );
 
@@ -593,7 +555,6 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
       return res.data?.data ?? {};
     } catch (err) {
       console.error("Failed to fetch reservation summary", err);
-      // Fallback: calculate locally
       const summary: Record<string, number> = {
         Pending: 0,
         Confirm: 0,
@@ -625,6 +586,7 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
         getUserReservations,
         cancelOrder,
         getReservationSummary,
+        refreshData,
       }}
     >
       {children}

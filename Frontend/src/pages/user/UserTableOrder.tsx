@@ -3,7 +3,12 @@ import { useMenu } from "@/hooks/useMenu";
 import { useTableOrders } from "@/context/TableOrderContext";
 import { useAuth } from "@/context/AuthContext";
 import { useOrders } from "@/context/OrderContext";
-import { Plus, Minus, Trash2, UtensilsCrossed, ShoppingBag, Search, Hash, ChevronDown, Leaf, Drumstick } from "lucide-react";
+import { reservationApi } from "@/lib/api";
+import {
+  Plus, Minus, Trash2, UtensilsCrossed, ShoppingBag,
+  Search, Hash, ChevronDown, Leaf, Drumstick,
+  AlertCircle, CheckCircle, Loader2
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
@@ -14,19 +19,38 @@ const filterCategories = ["Starters", "Main Course", "Pizza & Pasta", "Desserts"
 
 const FilterSection = ({ title, isOpen, onToggle, children }: { title: string; isOpen: boolean; onToggle: () => void; children: React.ReactNode }) => (
   <div className="border-b border-border last:border-b-0">
-    <button onClick={onToggle} className="flex items-center justify-between w-full py-2.5 px-1 font-body text-xs font-bold text-foreground uppercase tracking-wide hover:text-primary transition-colors">
+    <button
+      onClick={onToggle}
+      className="flex items-center justify-between w-full py-2.5 px-1 font-body text-xs font-bold text-foreground uppercase tracking-wide hover:text-primary transition-colors"
+    >
       {title}
       <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`} />
     </button>
-    <div className={`overflow-hidden transition-all duration-200 ${isOpen ? "max-h-96 pb-2" : "max-h-0"}`}>{children}</div>
+    <div className={`overflow-hidden transition-all duration-200 ${isOpen ? "max-h-96 pb-2" : "max-h-0"}`}>
+      {children}
+    </div>
   </div>
 );
+
+interface AvailableTable {
+  tableNo: number;
+  capacity: number;
+  isAvailable: boolean;
+}
+
+// Table capacity mapping (adjust based on your actual restaurant layout)
+const TABLE_CAPACITIES: Record<number, number> = {
+  1: 2, 2: 2, 3: 4, 4: 4, 5: 4,
+  6: 4, 7: 4, 8: 4, 9: 4, 10: 4,
+  11: 6, 12: 6, 13: 6, 14: 6, 15: 6,
+  16: 8, 17: 8, 18: 8, 19: 8, 20: 8,
+  21: 10, 22: 10, 23: 10, 24: 10, 25: 10,
+};
 
 const UserTableOrder = () => {
   const { menuItems, isLoading } = useMenu();
   const { addTableOrder, tableOrders } = useTableOrders();
   const { user } = useAuth();
-  const { getUserReservations } = useOrders();
   const [tableNumber, setTableNumber] = useState("");
   const [notes, setNotes] = useState("");
   const [search, setSearch] = useState("");
@@ -35,23 +59,68 @@ const UserTableOrder = () => {
   const [diet, setDiet] = useState<DietFilter>("all");
   const [sort, setSort] = useState<SortOption>("default");
   const [openSection, setOpenSection] = useState<string | null>(null);
+  const [availableTables, setAvailableTables] = useState<AvailableTable[]>([]);
+  const [loadingTables, setLoadingTables] = useState(false);
+  const [showTableSelector, setShowTableSelector] = useState(false);
+  const [noOfGuests, setNoOfGuests] = useState(2);
+  const [selectedDate, setSelectedDate] = useState("");
+  const [selectedTime, setSelectedTime] = useState("");
 
-
-
-  // Auto-load table number from confirmed reservation
+  // Set default date and time
   useEffect(() => {
-    if (user) {
-      const reservations = getUserReservations(user.id);
-      const confirmedWithTable = reservations.find(
-        (r) => r.status === "confirmed" && r.assignedTable
-      );
-      if (confirmedWithTable?.assignedTable) {
-        setTableNumber(String(confirmedWithTable.assignedTable));
-      }
+    const today = new Date();
+    const formattedDate = today.toISOString().split('T')[0];
+    const currentTime = today.toTimeString().slice(0, 5);
+    setSelectedDate(formattedDate);
+    setSelectedTime(currentTime);
+  }, []);
+
+  // Fetch available tables - CORRECTED VERSION
+  const fetchAvailableTables = async () => {
+    if (!selectedDate || !selectedTime) {
+      toast.error("Please select date and time");
+      return;
     }
-  }, [user, getUserReservations]);
 
+    setLoadingTables(true);
+    try {
+      const response = await reservationApi.getAvailableTables({
+        noOfGuests,
+        date: selectedDate,
+        startTime: selectedTime,
+        endTime: selectedTime,
+      });
 
+      // CORRECTED: Extract the array of available table numbers
+      // Based on API response structure: response.data.data.freeTables = [6,7,8,...,20]
+      const availableTableNumbers = response?.data?.data?.freeTables || response?.data?.freeTables || [];
+
+      console.log("Available table numbers:", availableTableNumbers);
+
+      if (Array.isArray(availableTableNumbers) && availableTableNumbers.length > 0) {
+        const tables: AvailableTable[] = availableTableNumbers.map((tableNo) => ({
+          tableNo: Number(tableNo),
+          capacity: TABLE_CAPACITIES[Number(tableNo)] || 4,
+          isAvailable: true,
+        }));
+
+        setAvailableTables(tables);
+        setShowTableSelector(true);
+        toast.success(`Found ${tables.length} available table(s)`);
+      } else {
+        setAvailableTables([]);
+        setShowTableSelector(true);
+        toast.info("No tables available for the selected time slot");
+      }
+    } catch (error) {
+      console.error("Failed to fetch available tables:", error);
+      toast.error("Failed to check table availability");
+      setAvailableTables([]);
+      setShowTableSelector(false);
+    } finally {
+      setLoadingTables(false);
+    }
+  };
 
   const toggleSection = (name: string) => setOpenSection((prev) => (prev === name ? null : name));
 
@@ -71,7 +140,7 @@ const UserTableOrder = () => {
     if (sort === "price-low") result = [...result].sort((a, b) => a.price - b.price);
     else if (sort === "price-high") result = [...result].sort((a, b) => b.price - a.price);
     return result;
-  }, [search, activeCategories, diet, sort]);
+  }, [search, activeCategories, diet, sort, menuItems]);
 
   const cartItems = useMemo(
     () =>
@@ -81,7 +150,7 @@ const UserTableOrder = () => {
           return item ? { ...item, qty } : null;
         })
         .filter(Boolean) as (typeof menuItems[0] & { qty: number })[],
-    [cart]
+    [cart, menuItems]
   );
 
   const totalPrice = cartItems.reduce((sum, i) => sum + i.price * i.qty, 0);
@@ -113,7 +182,7 @@ const UserTableOrder = () => {
   const handlePlaceOrder = () => {
     const tNum = parseInt(tableNumber, 10);
     if (!tNum || tNum < 1 || tNum > 50) {
-      toast.error("Please enter a valid table number (1-50)");
+      toast.error("Please select a valid table number");
       return;
     }
     if (cartItems.length === 0) {
@@ -139,6 +208,8 @@ const UserTableOrder = () => {
     toast.success(`Table order placed for Table #${tNum}!`);
     setCart({});
     setNotes("");
+    setTableNumber("");
+    setShowTableSelector(false);
   };
 
   const myOrders = tableOrders.filter(
@@ -149,7 +220,7 @@ const UserTableOrder = () => {
     <div>
       <h1 className="font-display text-2xl md:text-3xl font-bold mb-6">Table Order</h1>
       <p className="font-body text-sm text-muted-foreground mb-8">
-        Order directly from your table — no need to wait for a waiter. Select your items, enter your table number, and place your order.
+        Order directly from your table — no need to wait for a waiter. Select your items, choose your table, and place your order.
       </p>
 
       <div className="grid lg:grid-cols-3 gap-6">
@@ -174,7 +245,12 @@ const UserTableOrder = () => {
                 <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
                   <h3 className="font-body text-xs font-bold text-foreground">Filters</h3>
                   {(activeCategories.length > 0 || diet !== "all" || sort !== "default") && (
-                    <button onClick={() => { setActiveCategories([]); setDiet("all"); setSort("default"); }} className="font-body text-[10px] font-semibold text-primary hover:underline">CLEAR</button>
+                    <button
+                      onClick={() => { setActiveCategories([]); setDiet("all"); setSort("default"); }}
+                      className="font-body text-[10px] font-semibold text-primary hover:underline"
+                    >
+                      CLEAR
+                    </button>
                   )}
                 </div>
                 <div className="px-3">
@@ -251,71 +327,71 @@ const UserTableOrder = () => {
               )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {isLoading ? (
-              <div className="col-span-full py-10 text-center font-body text-muted-foreground">Loading menu items...</div>
-            ) : filteredMenu.length === 0 ? (
-              <div className="col-span-full py-10 text-center font-body text-muted-foreground">No menu items found.</div>
-            ) : filteredMenu.map((item) => {
-              const inCart = cart[item.id] || 0;
-              return (
-                <div
-                  key={item.id}
-                  className="flex gap-3 p-3 bg-card border border-border rounded-xl hover:border-primary/30 transition-colors"
-                >
-                  <img
-                    src={item.image}
-                    alt={item.name}
-                    className="w-20 h-20 rounded-lg object-cover shrink-0"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <h4 className="font-body text-sm font-semibold truncate">{item.name}</h4>
-                        <p className="font-body text-xs text-muted-foreground truncate">{item.category}</p>
-                      </div>
-                      <span
-                        className={`w-3 h-3 rounded-full shrink-0 mt-1 ${
-                          item.isVeg ? "bg-green-500" : "bg-red-500"
-                        }`}
-                        title={item.isVeg ? "Veg" : "Non-Veg"}
+                {isLoading ? (
+                  <div className="col-span-full py-10 text-center font-body text-muted-foreground">Loading menu items...</div>
+                ) : filteredMenu.length === 0 ? (
+                  <div className="col-span-full py-10 text-center font-body text-muted-foreground">No menu items found.</div>
+                ) : filteredMenu.map((item) => {
+                  const inCart = cart[item.id] || 0;
+                  return (
+                    <div
+                      key={item.id}
+                      className="flex gap-3 p-3 bg-card border border-border rounded-xl hover:border-primary/30 transition-colors"
+                    >
+                      <img
+                        src={item.image}
+                        alt={item.name}
+                        className="w-20 h-20 rounded-lg object-cover shrink-0"
                       />
-                    </div>
-                    <div className="flex items-center justify-between mt-2">
-                      <span className="font-body text-sm font-bold text-primary">
-                        ₹{item.price}
-                      </span>
-                      {inCart > 0 ? (
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            onClick={() => updateQty(item.id, inCart - 1)}
-                            className="p-1 rounded bg-muted hover:bg-primary hover:text-primary-foreground transition-colors"
-                          >
-                            <Minus className="w-3 h-3" />
-                          </button>
-                          <span className="font-body text-sm font-semibold w-5 text-center">
-                            {inCart}
-                          </span>
-                          <button
-                            onClick={() => updateQty(item.id, inCart + 1)}
-                            className="p-1 rounded bg-muted hover:bg-primary hover:text-primary-foreground transition-colors"
-                          >
-                            <Plus className="w-3 h-3" />
-                          </button>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <h4 className="font-body text-sm font-semibold truncate">{item.name}</h4>
+                            <p className="font-body text-xs text-muted-foreground truncate">{item.category}</p>
+                          </div>
+                          <span
+                            className={`w-3 h-3 rounded-full shrink-0 mt-1 ${
+                              item.isVeg ? "bg-green-500" : "bg-red-500"
+                            }`}
+                            title={item.isVeg ? "Veg" : "Non-Veg"}
+                          />
                         </div>
-                      ) : (
-                        <button
-                          onClick={() => addToCart(item.id)}
-                          className="flex items-center gap-1 bg-primary/10 text-primary font-body text-xs font-semibold px-2.5 py-1.5 rounded-lg hover:bg-primary hover:text-primary-foreground transition-colors"
-                        >
-                          <Plus className="w-3 h-3" /> Add
-                        </button>
-                      )}
+                        <div className="flex items-center justify-between mt-2">
+                          <span className="font-body text-sm font-bold text-primary">
+                            ₹{item.price}
+                          </span>
+                          {inCart > 0 ? (
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                onClick={() => updateQty(item.id, inCart - 1)}
+                                className="p-1 rounded bg-muted hover:bg-primary hover:text-primary-foreground transition-colors"
+                              >
+                                <Minus className="w-3 h-3" />
+                              </button>
+                              <span className="font-body text-sm font-semibold w-5 text-center">
+                                {inCart}
+                              </span>
+                              <button
+                                onClick={() => updateQty(item.id, inCart + 1)}
+                                className="p-1 rounded bg-muted hover:bg-primary hover:text-primary-foreground transition-colors"
+                              >
+                                <Plus className="w-3 h-3" />
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => addToCart(item.id)}
+                              className="flex items-center gap-1 bg-primary/10 text-primary font-body text-xs font-semibold px-2.5 py-1.5 rounded-lg hover:bg-primary hover:text-primary-foreground transition-colors"
+                            >
+                              <Plus className="w-3 h-3" /> Add
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>
@@ -323,43 +399,162 @@ const UserTableOrder = () => {
         {/* Right: Table Details & Cart Summary */}
         <div>
           <div className="sticky top-24 space-y-4">
-            {/* Table Details */}
+            {/* Table Details with Availability Check */}
             <div className="bg-card border border-border rounded-xl p-5">
               <h3 className="font-body text-sm font-bold mb-4 flex items-center gap-2">
-                <Hash className="w-4 h-4 text-primary" /> Table Details
+                <Hash className="w-4 h-4 text-primary" /> Table Selection
               </h3>
-              <div className="space-y-3">
-                {/* Show logged-in user name */}
-                <div className="flex items-center gap-2 p-2.5 bg-muted/50 rounded-lg">
-                  <span className="font-body text-xs text-muted-foreground">Name:</span>
-                  <span className="font-body text-sm font-semibold">{user?.name || "Guest"}</span>
+
+              <div className="flex items-center gap-2 p-2.5 bg-muted/50 rounded-lg mb-4">
+                <span className="font-body text-xs text-muted-foreground">Name:</span>
+                <span className="font-body text-sm font-semibold">{user?.name || "Guest"}</span>
+              </div>
+
+              {/* Availability Check Form */}
+              {!showTableSelector ? (
+                <div className="space-y-3">
+                  <div>
+                    <label className="font-body text-xs text-muted-foreground mb-1 block">
+                      Number of Guests *
+                    </label>
+                    <select
+                      value={noOfGuests}
+                      onChange={(e) => setNoOfGuests(Number(e.target.value))}
+                      className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    >
+                      {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
+                        <option key={num} value={num}>{num} {num === 1 ? "Guest" : "Guests"}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="font-body text-xs text-muted-foreground mb-1 block">
+                      Date *
+                    </label>
+                    <input
+                      type="date"
+                      value={selectedDate}
+                      onChange={(e) => setSelectedDate(e.target.value)}
+                      min={new Date().toISOString().split('T')[0]}
+                      className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-body text-xs text-muted-foreground mb-1 block">
+                      Time *
+                    </label>
+                    <input
+                      type="time"
+                      value={selectedTime}
+                      onChange={(e) => setSelectedTime(e.target.value)}
+                      className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    />
+                  </div>
+                  <Button
+                    onClick={fetchAvailableTables}
+                    disabled={loadingTables}
+                    className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body font-semibold gap-2"
+                  >
+                    {loadingTables ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Checking Availability...
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle className="w-4 h-4" />
+                        Check Available Tables
+                      </>
+                    )}
+                  </Button>
                 </div>
-                <div>
-                  <label className="font-body text-xs text-muted-foreground mb-1 block">
-                    Table Number *
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={50}
-                    placeholder="e.g. 5"
-                    value={tableNumber}
-                    onChange={(e) => setTableNumber(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  />
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-body text-xs text-muted-foreground">
+                      Select your table:
+                    </span>
+                    <button
+                      onClick={() => {
+                        setShowTableSelector(false);
+                        setTableNumber("");
+                      }}
+                      className="font-body text-xs text-primary hover:underline"
+                    >
+                      Change Criteria
+                    </button>
+                  </div>
+
+                  {loadingTables ? (
+                    <div className="text-center p-4">
+                      <Loader2 className="w-6 h-6 animate-spin text-primary mx-auto" />
+                      <p className="font-body text-xs text-muted-foreground mt-2">Loading tables...</p>
+                    </div>
+                  ) : availableTables.length > 0 ? (
+                    <div className="grid grid-cols-2 gap-2 max-h-60 overflow-y-auto">
+                      {availableTables.map((table) => (
+                        <button
+                          key={table.tableNo}
+                          onClick={() => setTableNumber(String(table.tableNo))}
+                          className={`p-2 rounded-lg border-2 transition-all text-center ${
+                            Number(tableNumber) === table.tableNo
+                              ? "border-primary bg-primary/10 shadow-sm"
+                              : "border-border hover:border-primary/40 bg-background"
+                          }`}
+                        >
+                          <div className="font-body text-[15px] font-bold text-foreground">
+                            Table {table.tableNo}
+                          </div>
+                          {/* <div className="font-body text-[10px] text-muted-foreground">
+                            Capacity: {table.capacity}
+                          </div> */}
+                          {Number(tableNumber) === table.tableNo && (
+                            <CheckCircle className="w-3 h-3 text-primary mx-auto mt-1" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center p-4 bg-muted/50 rounded-lg">
+                      <AlertCircle className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+                      <p className="font-body text-sm text-muted-foreground">
+                        No tables available for the selected time
+                      </p>
+                      <button
+                        onClick={() => {
+                          setShowTableSelector(false);
+                          setTableNumber("");
+                        }}
+                        className="mt-2 font-body text-xs text-primary hover:underline"
+                      >
+                        Try different time
+                      </button>
+                    </div>
+                  )}
+
+                  {tableNumber && availableTables.length > 0 && (
+                    <div className="mt-3 p-2.5 bg-yellow-50 border border-green-200 rounded-lg">
+                      <p className="font-body text-xs text-yellow-700 flex items-center gap-2">
+                        <CheckCircle className="w-3.5 h-3.5" />
+                        Selected Table #{tableNumber}
+                      </p>
+                    </div>
+                  )}
                 </div>
-                <div>
-                  <label className="font-body text-xs text-muted-foreground mb-1 block">
-                    Special Notes
-                  </label>
-                  <textarea
-                    placeholder="Extra spicy, no onion, etc."
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    rows={2}
-                    className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
-                  />
-                </div>
+              )}
+
+              {/* Special Notes */}
+              <div className="mt-4">
+                <label className="font-body text-xs text-muted-foreground mb-1 block">
+                  Special Notes
+                </label>
+                <textarea
+                  placeholder="Extra spicy, no onion, etc."
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  rows={2}
+                  className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
+                />
               </div>
             </div>
 
@@ -415,11 +610,18 @@ const UserTableOrder = () => {
 
               <Button
                 onClick={handlePlaceOrder}
-                disabled={cartItems.length === 0}
+                disabled={cartItems.length === 0 || !tableNumber || !showTableSelector}
                 className="w-full mt-4 bg-primary text-primary-foreground hover:bg-primary/90 font-body font-semibold gap-2"
               >
-                <UtensilsCrossed className="w-4 h-4" /> Place Table Order
+                <UtensilsCrossed className="w-4 h-4" />
+                {!tableNumber ? "Select a Table First" : "Place Table Order"}
               </Button>
+
+              {showTableSelector && !tableNumber && availableTables.length > 0 && (
+                <p className="font-body text-xs text-amber-600 text-center mt-2">
+                  Please select a table number above
+                </p>
+              )}
             </div>
 
             {/* Active Orders */}
@@ -433,7 +635,7 @@ const UserTableOrder = () => {
                       className="flex items-center justify-between gap-2 p-2.5 bg-muted/50 rounded-lg"
                     >
                       <div>
-                        <p className="font-body text-xs font-semibold">
+                        <p className="font-body text-[10px] font-semibold">
                           Table #{order.tableNumber}
                         </p>
                         <p className="font-body text-[10px] text-muted-foreground">

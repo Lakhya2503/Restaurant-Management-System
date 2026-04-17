@@ -43,10 +43,6 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const getFullAddress = (address: Address): string => {
-  return `${address.addressLine}, ${address.place} - ${address.pinCode}`;
-};
-
 const mapUser = (u: any): AppUser => {
   console.log("Mapping user data:", u);
   console.log("User addresses:", u.addresses);
@@ -158,7 +154,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     try {
       console.log("Updating profile with data:", data);
 
-      // Send as JSON for text-only updates
       const res = await authApi.updateProfile({
         fullName: data.fullName,
         phoneNumber: data.phoneNumber
@@ -170,23 +165,19 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       console.log("Processed response data:", raw);
 
       if (raw) {
-        // If the response includes the updated user
         if (raw.user) {
           setUser(mapUser(raw.user));
           toast.success("Profile updated successfully!");
         }
-        // If the response is the user object itself
         else if (raw._id || raw.id) {
           setUser(mapUser(raw));
           toast.success("Profile updated successfully!");
         }
-        // Otherwise, fetch the latest user data
         else {
           await refreshUser();
           toast.success("Profile updated successfully!");
         }
       } else {
-        // If no data in response, fetch fresh user data
         await refreshUser();
         toast.success("Profile updated successfully!");
       }
@@ -201,7 +192,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     try {
       console.log("Uploading avatar:", file.name);
 
-      // Validate file
       if (!file.type.startsWith('image/')) {
         throw new Error("Please select an image file");
       }
@@ -210,35 +200,28 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         throw new Error("Image size must be less than 2MB");
       }
 
-      // Create FormData for file upload
       const formData = new FormData();
       formData.append('avatar', file);
 
-      // Call the dedicated avatar update API
       const res = await authApi.updateAvatar(formData);
       const raw = res.data?.data ?? res.data;
 
       console.log("Update avatar response:", res);
-      console.log("Processed response data:", raw);
 
       if (raw) {
-        // If the response includes the updated user
         if (raw.user) {
           setUser(mapUser(raw.user));
           toast.success("Avatar updated successfully!");
         }
-        // If the response is the user object itself
         else if (raw._id || raw.id) {
           setUser(mapUser(raw));
           toast.success("Avatar updated successfully!");
         }
-        // Otherwise, fetch the latest user data
         else {
           await refreshUser();
           toast.success("Avatar updated successfully!");
         }
       } else {
-        // If no data in response, fetch fresh user data
         await refreshUser();
         toast.success("Avatar updated successfully!");
       }

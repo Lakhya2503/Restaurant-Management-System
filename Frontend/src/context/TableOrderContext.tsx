@@ -31,15 +31,14 @@ interface TableOrderContextType {
   tableOrders: TableOrder[];
   addTableOrder: (order: Omit<TableOrder, "id" | "createdAt">) => Promise<TableOrder>;
   updateTableOrderStatus: (orderId: string, status: TableOrder["status"]) => void;
-  updateTableOrder: (
-    orderId: string,
-    data: Partial<Pick<TableOrder, "tableNumber" | "items" | "totalPrice" | "notes">>
-  ) => void;
+  updateTableOrder: (orderId: string, data: Partial<Pick<TableOrder, "tableNumber" | "items" | "totalPrice" | "notes">>) => void;
   deleteTableOrder: (orderId: string) => void;
   getActiveTableOrders: () => TableOrder[];
 }
 
 const TableOrderContext = createContext<TableOrderContextType | undefined>(undefined);
+
+const TABLE_ORDERS_STORAGE_KEY = "tableOrders";
 
 export const TableOrderProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
@@ -47,12 +46,9 @@ export const TableOrderProvider: React.FC<{ children: React.ReactNode }> = ({
   const { user } = useAuth();
   const [tableOrders, setTableOrders] = useState<TableOrder[]>([]);
 
-  // -------------------------------------------------------------------------
   // Fetch table orders from backend on mount
-  // -------------------------------------------------------------------------
   useEffect(() => {
-    // Load from localStorage first (for all users)
-    const saved = localStorage.getItem("tableOrders");
+    const saved = localStorage.getItem(TABLE_ORDERS_STORAGE_KEY);
     if (saved) {
       try {
         setTableOrders(JSON.parse(saved));
@@ -61,26 +57,23 @@ export const TableOrderProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     }
 
-    (async () => {
+    const fetchTableOrders = async () => {
       try {
-        const res = user?.role === "admin" 
-          ? await orderApi.getAllOrders() 
+        const res = user?.role === "admin"
+          ? await orderApi.getAllOrders()
           : await orderApi.getUserOrders();
-          
-        const raw: Record<string, unknown>[] =
-          res.data?.data?.orders ?? res.data?.data ?? res.data ?? [];
-        
+
+        const raw: Record<string, unknown>[] = res.data?.data?.orders ?? res.data?.data ?? res.data ?? [];
+
         if (Array.isArray(raw)) {
-          // Filter only table orders (case-insensitive)
-          const tableRaw = raw.filter((o) => 
+          const tableRaw = raw.filter((o) =>
             String(o.orderType).toLowerCase() === "table order"
           );
-          
+
           const mapped = tableRaw.map((r): TableOrder => {
             const rawItems = Array.isArray(r.items) ? (r.items as any[]) : [];
             const rawStatus = String(r.orderStatus ?? r.status ?? "pending").toLowerCase();
-            
-            // Calculate total price if totalAmount is missing or zero
+
             let calculatedTotal = Number(r.totalAmount ?? (r.paymentId as any)?.paymentAmount ?? 0);
             if (calculatedTotal === 0) {
               calculatedTotal = rawItems.reduce((acc, i) => {
@@ -118,17 +111,21 @@ export const TableOrderProvider: React.FC<{ children: React.ReactNode }> = ({
       } catch (err) {
         console.error("Failed to fetch table orders from backend:", err);
       }
-    })();
+    };
+
+    fetchTableOrders();
   }, [user]);
 
+  // Persist to localStorage with debounce
   useEffect(() => {
-    if (tableOrders.length > 0)
-      localStorage.setItem("tableOrders", JSON.stringify(tableOrders));
+    if (tableOrders.length > 0) {
+      const saveTimeout = setTimeout(() => {
+        localStorage.setItem(TABLE_ORDERS_STORAGE_KEY, JSON.stringify(tableOrders));
+      }, 100);
+      return () => clearTimeout(saveTimeout);
+    }
   }, [tableOrders]);
 
-  // -------------------------------------------------------------------------
-  // addTableOrder — POST to backend, fall back to local on failure
-  // -------------------------------------------------------------------------
   const addTableOrder = useCallback(
     async (data: Omit<TableOrder, "id" | "createdAt">): Promise<TableOrder> => {
       let newOrder: TableOrder;
@@ -170,7 +167,6 @@ export const TableOrderProvider: React.FC<{ children: React.ReactNode }> = ({
           throw new Error("Unexpected response");
         }
       } catch {
-        // Offline / auth fallback
         newOrder = {
           ...data,
           id: `TBL${Date.now()}`,
@@ -179,7 +175,7 @@ export const TableOrderProvider: React.FC<{ children: React.ReactNode }> = ({
       }
 
       setTableOrders((prev) => {
-        const unique = [newOrder, ...prev].filter((o, index, self) => 
+        const unique = [newOrder, ...prev].filter((o, index, self) =>
           index === self.findIndex((t) => t.id === o.id)
         );
         return unique;
@@ -201,12 +197,7 @@ export const TableOrderProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 
   const updateTableOrder = useCallback(
-    (
-      orderId: string,
-      data: Partial<
-        Pick<TableOrder, "tableNumber" | "items" | "totalPrice" | "notes">
-      >
-    ) => {
+    (orderId: string, data: Partial<Pick<TableOrder, "tableNumber" | "items" | "totalPrice" | "notes">>) => {
       setTableOrders((prev) =>
         prev.map((o) => (o.id === orderId ? { ...o, ...data } : o))
       );
@@ -218,17 +209,14 @@ export const TableOrderProvider: React.FC<{ children: React.ReactNode }> = ({
   const deleteTableOrder = useCallback((orderId: string) => {
     setTableOrders((prev) => {
       const updated = prev.filter((o) => o.id !== orderId);
-      localStorage.setItem("tableOrders", JSON.stringify(updated));
+      localStorage.setItem(TABLE_ORDERS_STORAGE_KEY, JSON.stringify(updated));
       return updated;
     });
     window.dispatchEvent(new Event("tableOrdersUpdated"));
   }, []);
 
   const getActiveTableOrders = useCallback(
-    () =>
-      tableOrders.filter(
-        (o) => o.status !== "completed" && o.status !== "cancelled"
-      ),
+    () => tableOrders.filter((o) => o.status !== "completed" && o.status !== "cancelled"),
     [tableOrders]
   );
 
@@ -250,7 +238,6 @@ export const TableOrderProvider: React.FC<{ children: React.ReactNode }> = ({
 
 export const useTableOrders = () => {
   const ctx = useContext(TableOrderContext);
-  if (!ctx)
-    throw new Error("useTableOrders must be used within TableOrderProvider");
+  if (!ctx) throw new Error("useTableOrders must be used within TableOrderProvider");
   return ctx;
 };

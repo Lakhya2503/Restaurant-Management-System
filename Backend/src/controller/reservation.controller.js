@@ -2,51 +2,14 @@ import asyncHandler from "../utils/asyncHandler.js";
 import ApiResponse from "../utils/ApiResponse.js";
 import ApiError from "../utils/ApiError.js";
 import Reservation from "../models/reservation.models.js";
-
-// ===================== TABLE CONFIG =====================
-const tableMapping = {
-  1: { start: 1, end: 5 },
-  2: { start: 6, end: 20 },
-  3: { start: 21, end: 35 },
-  4: { start: 36, end: 50 },
-  5: { start: 51, end: 65 },
-  6: { start: 66, end: 80 },
-  7: { start: 81, end: 95 },
-  8: { start: 96, end: 110 },
-  9: { start: 111, end: 125 },
-  10: { start: 126, end: 140 },
-  12: { start: 141, end: 160 },
-};
-
-// ===================== HELPERS =====================
-const validateTimeFormat = (time) =>
-  /^([01]\d|2[0-3]):([0-5]\d)$/.test(time);
-
-const toMinutes = (time) => {
-  const [h, m] = time.split(":").map(Number);
-  return h * 60 + m;
-};
-
-const getTableRange = (guests) => {
-  const key = Object.keys(tableMapping)
-    .map(Number)
-    .sort((a, b) => a - b)
-    .find((k) => guests <= k);
-
-  return key ? tableMapping[key] : null;
-};
-
-const getPossibleTables = (range) =>
-  Array.from({ length: range.end - range.start + 1 }, (_, i) => range.start + i);
-
-// reusable conflict query
-const buildConflictQuery = (tableNo, parsedDate, startMin, endMin) => ({
-  tableNo,
-  date: parsedDate,
-  tableReservationStatus: { $ne: "cancelled" },
-  startTimeInMinutes: { $lt: endMin },
-  endTimeInMinutes: { $gt: startMin },
-});
+import {
+  buildConflictQuery,
+  getTableRange,
+  toMinutes,
+  validateTimeFormat,
+  toMinutes,
+  getTableRange,
+  getPossibleTables} from "../utils/helper.js";
 
 // ===================== CREATE RESERVATION =====================
 const newTableReservation = asyncHandler(async (req, res) => {
@@ -144,46 +107,104 @@ const newTableReservation = asyncHandler(async (req, res) => {
 
 // ===================== AVAILABLE TABLES =====================
 const availableTableForReservation = asyncHandler(async (req, res) => {
-  const { noOfGuests, date, startTime, endTime } = req.body;
+    const { noOfGuests, date, startTime, endTime } = req.body;
+    console.log(req.body)
 
-  if (!noOfGuests || !date || !startTime || !endTime) {
-    throw new ApiError(400, "Missing required fields");
-  }
+    if (startTime === endTime) {
+        console.log(req.body)
+        const parsedDate = new Date(date);
+        console.log("parsedDate", parsedDate)
+        const range = getTableRange(Number(noOfGuests));
+        console.log("range", range)
+        if (!range) throw new ApiError(400, "Invalid guest count");
+        const possibleTables = getPossibleTables(range);
+        console.log("possibleTables", possibleTables)
+        const startOfDay = new Date(parsedDate);
+        startOfDay.setHours(0, 0, 0, 0);
+        console.log("startOfDay", startOfDay)
+        const endOfDay = new Date(parsedDate);
+        endOfDay.setHours(23, 59, 59, 999);
+        console.log("endOfDay", endOfDay)
+        const startMin = toMinutes(startTime);
+        // const endMin = toMinutes(endTime);
+        console.log("startMin", startMin)
+        const booked = await Reservation.find({
+            tableNo: { $in: possibleTables },
+            date: { $gte: startOfDay, $lte: endOfDay },
+            tableReservationStatus: { $ne: "cancelled" },
+            startTimeInMinutes: { $lte: startMin },
+            endTimeInMinutes: { $gt: startMin },
+        }).select("tableNo");
+        console.log("booked", booked)
+        const bookedSet = new Set(booked.map((b) => b.tableNo));
+        console.log("bookedSet", bookedSet)
+        const freeTables = possibleTables.filter((t) => !bookedSet.has(t));
+        console.log("freeTables", freeTables)
+        return res.status(200).json(
+            new ApiResponse(200, { freeTables }, "Available tables fetched")
+        );
+    }
 
-  if (!validateTimeFormat(startTime) || !validateTimeFormat(endTime)) {
-    throw new ApiError(400, "Invalid time format");
-  }
+    if (!noOfGuests || !date || !startTime || !endTime) {
+        throw new ApiError(400, "Missing required fields");
+    }
 
-  const startMin = toMinutes(startTime);
-  const endMin = toMinutes(endTime);
+    if (!validateTimeFormat(startTime) || !validateTimeFormat(endTime)) {
+        throw new ApiError(400, "Invalid time format");
+    }
 
-  if (startMin >= endMin) {
-    throw new ApiError(400, "Invalid time range");
-  }
+    const startMin = toMinutes(startTime);
+    const endMin = toMinutes(endTime);
+    const parsedDate = new Date(date);
+    const range = getTableRange(Number(noOfGuests));
 
-  const parsedDate = new Date(date);
+    if (!range) throw new ApiError(400, "Invalid guest count");
 
-  const range = getTableRange(Number(noOfGuests));
-  if (!range) throw new ApiError(400, "Invalid guest count");
+    const possibleTables = getPossibleTables(range);
+    const startOfDay = new Date(parsedDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(parsedDate);
+    endOfDay.setHours(23, 59, 59, 999);
 
-  const possibleTables = getPossibleTables(range);
+    // CASE 1: If start == end → treat as instant lookup (NO range logic)
+    if (startMin === endMin) {
+        const booked = await Reservation.find({
+            tableNo: { $in: possibleTables },
+            date: { $gte: startOfDay, $lte: endOfDay },
+            tableReservationStatus: { $ne: "cancelled" },
+            startTimeInMinutes: { $lte: startMin },
+            endTimeInMinutes: { $gt: startMin },
+        }).select("tableNo");
 
-  const booked = await Reservation.find({
-    tableNo: { $in: possibleTables },
-    date: parsedDate,
-    tableReservationStatus: { $ne: "cancelled" },
-    startTimeInMinutes: { $lt: endMin },
-    endTimeInMinutes: { $gt: startMin },
-  }).select("tableNo");
+        const bookedSet = new Set(booked.map((b) => b.tableNo));
+        const freeTables = possibleTables.filter((t) => !bookedSet.has(t));
 
-  const bookedSet = new Set(booked.map((b) => b.tableNo));
-  const freeTables = possibleTables.filter((t) => !bookedSet.has(t));
+        return res.status(200).json(
+            new ApiResponse(200,  freeTables , "Available tables fetched")
+        );
+    }
 
-  return res.status(200).json(
-    new ApiResponse(200, freeTables, "Available tables fetched")
-  );
+    // CASE 2: normal validation (only when they are different)
+    if (startMin > endMin) {
+        throw new ApiError(400, "Invalid time range");
+    }
+
+    // CASE 3: normal overlap check
+    const booked = await Reservation.find({
+        tableNo: { $in: possibleTables },
+        date: { $gte: startOfDay, $lte: endOfDay },
+        tableReservationStatus: { $ne: "cancelled" },
+        startTimeInMinutes: { $lt: endMin },
+        endTimeInMinutes: { $gt: startMin },
+    }).select("tableNo");
+
+    const bookedSet = new Set(booked.map((b) => b.tableNo));
+    const freeTables = possibleTables.filter((t) => !bookedSet.has(t));
+
+    return res.status(200).json(
+        new ApiResponse(200, { freeTables }, "Available tables fetched")
+    );
 });
-
 // ===================== UPDATE STATUS =====================
 const updateReservationStatus = asyncHandler(async (req, res) => {
   const { tableReservationId } = req.params;
