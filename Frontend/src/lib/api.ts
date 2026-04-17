@@ -49,6 +49,8 @@ export const authApi = {
   logout: () => api.post("/auth/user/logout"),
   me: () => api.get("/auth/user/me"),
 
+  getAllUsers:()=> api.get("/auth/user/all-users"),
+
   updateProfile: (data: { fullName?: string; phoneNumber?: string }) =>
     api.patch("/auth/user/update-profile", data, {
       headers: { "Content-Type": "application/json" },
@@ -165,7 +167,7 @@ export const reservationApi = {
     date: string;
     startTime: string;
     endTime: string;
-  }) => api.get("/reserve/available-table", { params }),
+  }) => api.post("/reserve/available-table", { params }),
 
   updateStatus: (reservationId: string, payload: {
     tableNo?: number;

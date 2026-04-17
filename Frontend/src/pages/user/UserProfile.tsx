@@ -275,7 +275,7 @@ import { toast } from "sonner";
                   onChange={handleAvatarChange}
                 />
 
-                <div className="absolute bottom-0 right-0 w-6 h-6 bg-green-500 rounded-full border-2 border-background"></div>
+                
               </div>
               <div className="flex-1">
                 <h3 className="text-2xl font-bold text-foreground">{user.name}</h3>

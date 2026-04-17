@@ -1,10 +1,12 @@
 import User from '../models/user.models.js';
+import { sendEmailVerifyUser } from '../services/email.service.js';
 import ApiError from '../utils/ApiError.js';
 import ApiResponse from '../utils/ApiResponse.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import uploadCloudinary from '../utils/cloudinary.js';
-import { adminKey } from '../utils/config.js';
+import { adminKey, verifyEmailURi } from '../utils/config.js';
 import { removeRefreshTokenAndPassword, requiredField } from '../utils/helper.js';
+import crypto from 'crypto'
 
 const option = {
   httpOnly : true,
@@ -69,7 +71,23 @@ const registerUser = asyncHandler(async(req,res)=>{
           addresses : address
         })
 
+
+           const { unHashedToken, hashedToken, tokenExpiry } =  user.generateTemporaryToken();
+
+          user.emailVerificationToken = hashedToken;
+          user.emailVerificationExpiry = tokenExpiry;
+
+          await user.save({ validateBeforeSave: false });
+
+          await user.save({ validateBeforeSave : false })
+
+          console.log(`${verifyEmailURi}/verify-email?token=${unHashedToken}`);
+
+        //  await sendEmailVerifyUser(user.email, user.fullName, unHashedToken)
+
+
       await removeRefreshTokenAndPassword(user._id)
+
 
     return res.status(200).json(new ApiResponse(201, {}, `${`user.role`} created Successfully`))
 })
@@ -81,6 +99,11 @@ const loginUser = asyncHandler(async(req,res)=>{
   requiredField([email,password])
 
     const user = await User.findOne({email})
+
+
+    if(!user.isEmailVerified){
+      throw new ApiError(401, "User can't login beacuse user didn't verify")
+    }
 
     if(!user) {
       throw new ApiError(401, "User can't exist with this email")
@@ -222,34 +245,45 @@ const verifyEmailRequest = asyncHandler(async(req,res)=>{
     .json(new ApiResponse(204, { "token" : unHashedToken } , `${user.role} verify emailId`))
 })
 
-const verifyEmail = asyncHandler(async(req,res)=>{
+const verifyEmail = asyncHandler(async (req, res) => {
+  const verificationToken = req.query.token;
 
-    const { verificationToken  } = req.body
+  if (!verificationToken) {
+    throw new ApiError(400, "Email verification token missing");
+  }
 
-
-    if(!verificationToken){
-      throw new ApiError(404,"Email verification Token Missing")
-    }
-
-  let hashedToken = crypto
+  const hashedToken = crypto
     .createHash("sha256")
     .update(verificationToken)
-    .digest("hex")
+    .digest("hex");
+
+  const user = await User.findOne({
+    emailVerificationToken: hashedToken,
+    emailVerificationExpiry: { $gt: Date.now() },
+  });
+
+  if (!user) {
+    throw new ApiError(400, "Invalid or expired verification token");
+  }
 
 
-    const user = await User.findOne({
-      emailVerificationToken : hashedToken,
-      emailVerificationExpiry : {$gt : Date.now()}
-    })
+  user.isEmailVerified = true;
 
-      return res
-          .status(204)
-          .json(new ApiResponse(204 , {} , " Email Verified successfully "))
-})
 
+  user.emailVerificationToken = undefined;
+  user.emailVerificationExpiry = undefined;
+
+  await user.save({ validateBeforeSave: false });
+
+  return res.status(200).json(
+    new ApiResponse(200, {}, "Email verified successfully")
+  );
+});
 const allUsers = asyncHandler(async(req,res)=>{
 
     const users = await User.find().populate()
+
+    console.log(users)
 
   return res.status(200).json(new ApiResponse(200, { users } , "all Users fetch successfully"))
 })

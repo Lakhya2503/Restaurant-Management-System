@@ -23,6 +23,4 @@ export const googleClientSecret = String(process.env.GOOGLE_CLIENT_SECRET)
 export const brevoApiKey = String(process.env.BREVO_API_KEY)
 export const brevoSenderName = String(process.env.BREVO_SENDER_NAME)
 export const brevoSenderEmail = String(process.env.BREVO_SENDER_EMAIL)
-
-
-
+export const verifyEmailURi = String(process.env.BACKEND_URI)

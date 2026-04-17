@@ -422,7 +422,7 @@ const ReservationPage = () => {
                       </div>
                     ))}
                   </div>
-                  
+
                 </>
               )}
             </div>

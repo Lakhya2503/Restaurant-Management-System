@@ -72,6 +72,8 @@ router.get(
   googleLoginCallback
 );
 
+router.route("/verify-email").get(verifyEmail)
+
 
 
 export default router;

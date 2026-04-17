@@ -3,7 +3,7 @@ import ApiResponse from "../utils/ApiResponse.js";
 import ApiError from "../utils/ApiError.js";
 import Reservation from "../models/reservation.models.js";
 
-// Table capacity mapping
+// ===================== TABLE CONFIG =====================
 const tableMapping = {
   1: { start: 1, end: 5 },
   2: { start: 6, end: 20 },
@@ -13,67 +13,55 @@ const tableMapping = {
   6: { start: 66, end: 80 },
   7: { start: 81, end: 95 },
   8: { start: 96, end: 110 },
-  10: { start: 111, end: 125 },
-  12: { start: 126, end: 140 }
+  9: { start: 111, end: 125 },
+  10: { start: 126, end: 140 },
+  12: { start: 141, end: 160 },
 };
 
-// Validate HH:mm format
+// ===================== HELPERS =====================
 const validateTimeFormat = (time) =>
   /^([01]\d|2[0-3]):([0-5]\d)$/.test(time);
 
-// Convert time → minutes
 const toMinutes = (time) => {
   const [h, m] = time.split(":").map(Number);
   return h * 60 + m;
 };
 
-// Get table range based on guests (flexible)
 const getTableRange = (guests) => {
-  const capacity = Object.keys(tableMapping)
+  const key = Object.keys(tableMapping)
     .map(Number)
     .sort((a, b) => a - b)
-    .find(c => guests <= c);
+    .find((k) => guests <= k);
 
-  return capacity ? tableMapping[capacity] : null;
+  return key ? tableMapping[key] : null;
 };
 
-// Get all tables in range
 const getPossibleTables = (range) =>
-  Array.from(
-    { length: range.end - range.start + 1 },
-    (_, i) => range.start + i
-  );
+  Array.from({ length: range.end - range.start + 1 }, (_, i) => range.start + i);
 
-// Find free tables
-const findFreeTables = async (tables, date, startMin, endMin) => {
-  const reserved = await Reservation.find({
-    tableNo: { $in: tables },
-    date,
-    startTimeInMinutes: { $lt: endMin },
-    endTimeInMinutes: { $gt: startMin }
-  }).select("tableNo");
+// reusable conflict query
+const buildConflictQuery = (tableNo, parsedDate, startMin, endMin) => ({
+  tableNo,
+  date: parsedDate,
+  tableReservationStatus: { $ne: "cancelled" },
+  startTimeInMinutes: { $lt: endMin },
+  endTimeInMinutes: { $gt: startMin },
+});
 
-  const reservedSet = new Set(reserved.map(r => r.tableNo));
-
-  return tables.filter(t => !reservedSet.has(t));
-};
-
-// Create reservation
+// ===================== CREATE RESERVATION =====================
 const newTableReservation = asyncHandler(async (req, res) => {
-  let {
+  const {
     tableNo,
     startTime,
     endTime,
     date,
     noOfGuests,
     name,
-    specialRequests,
     phoneNumber,
-    reservationUserEmail
+    specialRequests = "",
   } = req.body;
 
-  // Validation
-  if (!startTime || !endTime || !date || !noOfGuests) {
+  if (!startTime || !endTime || !date || !noOfGuests || !name || !phoneNumber) {
     throw new ApiError(400, "Missing required fields");
   }
 
@@ -89,76 +77,77 @@ const newTableReservation = asyncHandler(async (req, res) => {
   }
 
   const parsedDate = new Date(date);
-  if (isNaN(parsedDate)) {
-    throw new ApiError(400, "Invalid date format (YYYY-MM-DD)");
+  if (isNaN(parsedDate.getTime())) {
+    throw new ApiError(400, "Invalid date format");
   }
 
-  const range = getTableRange(noOfGuests);
-  if (!range) {
-    throw new ApiError(400, "Invalid guest count");
-  }
+  const range = getTableRange(Number(noOfGuests));
+  if (!range) throw new ApiError(400, "Invalid guest count");
 
   const possibleTables = getPossibleTables(range);
 
-  // Validate table if provided
-  if (tableNo && !possibleTables.includes(tableNo)) {
-    throw new ApiError(400, "Invalid table for given guest count");
+  let finalTable = Number(tableNo);
+
+  if (finalTable && !possibleTables.includes(finalTable)) {
+    throw new ApiError(400, "Invalid table selection");
   }
 
-  // Auto assign table
-  if (!tableNo) {
-    const freeTables = await findFreeTables(
-      possibleTables,
-      parsedDate,
-      startMin,
-      endMin
-    );
+  // AUTO ASSIGN
+  if (!finalTable) {
+    const booked = await Reservation.find({
+      tableNo: { $in: possibleTables },
+      date: parsedDate,
+      tableReservationStatus: { $ne: "cancelled" },
+      startTimeInMinutes: { $lt: endMin },
+      endTimeInMinutes: { $gt: startMin },
+    }).select("tableNo");
+
+    const bookedSet = new Set(booked.map((b) => b.tableNo));
+    const freeTables = possibleTables.filter((t) => !bookedSet.has(t));
 
     if (!freeTables.length) {
       throw new ApiError(400, "No tables available");
     }
 
-    tableNo = freeTables[0];
+    finalTable = freeTables[0];
   }
 
-  // Conflict check
-  const conflict = await Reservation.findOne({
-    tableNo,
-    date: parsedDate,
-    startTimeInMinutes: { $lt: endMin },
-    endTimeInMinutes: { $gt: startMin }
-  });
+  // CONFLICT CHECK
+  const conflict = await Reservation.findOne(
+    buildConflictQuery(finalTable, parsedDate, startMin, endMin)
+  );
 
   if (conflict) {
-    throw new ApiError(400, "Table already booked");
+    throw new ApiError(400, "Table already booked for this time slot");
   }
 
+  // CREATE
   const reservation = await Reservation.create({
-    tableNo,
+    tableNo: finalTable,
     startTime,
     endTime,
     startTimeInMinutes: startMin,
     endTimeInMinutes: endMin,
     date: parsedDate,
-    noOfGuests,
+    noOfGuests: Number(noOfGuests),
     name,
-    reservationUserId : req.user?._id ,
-    reservationUserEmail,
     phoneNumber,
-    specialRequests
+    reservationEmail: req.user?.email, // safe now
+    reservationUserId: req.user?._id,
+    specialRequests,
   });
 
   return res.status(201).json(
-    new ApiResponse(201, reservation, "Table reserved successfully")
+    new ApiResponse(201, reservation, "Reservation created successfully")
   );
 });
 
-// Get available tables
+// ===================== AVAILABLE TABLES =====================
 const availableTableForReservation = asyncHandler(async (req, res) => {
-  const { noOfGuests, date, startTime, endTime } = req.query;
+  const { noOfGuests, date, startTime, endTime } = req.body;
 
   if (!noOfGuests || !date || !startTime || !endTime) {
-    throw new ApiError(400, "Missing query params");
+    throw new ApiError(400, "Missing required fields");
   }
 
   if (!validateTimeFormat(startTime) || !validateTimeFormat(endTime)) {
@@ -169,34 +158,33 @@ const availableTableForReservation = asyncHandler(async (req, res) => {
   const endMin = toMinutes(endTime);
 
   if (startMin >= endMin) {
-    throw new ApiError(400, "End time must be after start time");
+    throw new ApiError(400, "Invalid time range");
   }
 
   const parsedDate = new Date(date);
-  if (isNaN(parsedDate)) {
-    throw new ApiError(400, "Invalid date format");
-  }
 
   const range = getTableRange(Number(noOfGuests));
-  if (!range) {
-    throw new ApiError(400, "Invalid guest count");
-  }
+  if (!range) throw new ApiError(400, "Invalid guest count");
 
   const possibleTables = getPossibleTables(range);
 
-  const freeTables = await findFreeTables(
-    possibleTables,
-    parsedDate,
-    startMin,
-    endMin
-  );
+  const booked = await Reservation.find({
+    tableNo: { $in: possibleTables },
+    date: parsedDate,
+    tableReservationStatus: { $ne: "cancelled" },
+    startTimeInMinutes: { $lt: endMin },
+    endTimeInMinutes: { $gt: startMin },
+  }).select("tableNo");
+
+  const bookedSet = new Set(booked.map((b) => b.tableNo));
+  const freeTables = possibleTables.filter((t) => !bookedSet.has(t));
 
   return res.status(200).json(
-    new ApiResponse(200, { freeTables }, "Available tables fetched")
+    new ApiResponse(200, freeTables, "Available tables fetched")
   );
 });
 
-// Update reservation status
+// ===================== UPDATE STATUS =====================
 const updateReservationStatus = asyncHandler(async (req, res) => {
   const { tableReservationId } = req.params;
   const { tableReservationStatus, tableNo } = req.body;
@@ -205,79 +193,72 @@ const updateReservationStatus = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Status required");
   }
 
-  const reservation = await Reservation.findById(tableReservationId);
-  if (!reservation) {
-    throw new ApiError(404, "Reservation not found");
-  }
-
   const updated = await Reservation.findByIdAndUpdate(
     tableReservationId,
     {
       tableReservationStatus,
-      ...(tableNo && { tableNo })
+      ...(tableNo && { tableNo: Number(tableNo) }),
     },
     { new: true, runValidators: true }
-  ).populate("reservationUserId", "fullName email phoneNumber");
+  ).populate("reservationUserId", "fullName email phoneNumber avatar");
+
+  if (!updated) {
+    throw new ApiError(404, "Reservation not found");
+  }
 
   return res.status(200).json(
-    new ApiResponse(200, updated, "Reservation updated")
+    new ApiResponse(200, updated, "Updated successfully")
   );
 });
 
-// User reservations
+// ===================== USER RESERVATIONS =====================
 const getUserReservations = asyncHandler(async (req, res) => {
-
-          const reservations = await Reservation.find({
-          reservationUserId: req.user?._id
-        })
-        .populate({
-          path: "reservationUserId",
-          select: "fullName email phoneNumber avatar"
-        })
-        .sort({ date: -1, startTimeInMinutes: -1 });
+  const data = await Reservation.find({
+    reservationUserId: req.user?._id,
+  })
+    .populate("reservationUserId", "fullName email phoneNumber avatar")
+    .sort({ date: -1, startTimeInMinutes: -1 });
 
   return res.status(200).json(
-    new ApiResponse(200, reservations, "User reservations fetched")
+    new ApiResponse(200, data, "User reservations")
   );
 });
 
-
+// ===================== ALL RESERVATIONS =====================
 const getAllReservations = asyncHandler(async (req, res) => {
-  const reservations = await Reservation.find()
+  const data = await Reservation.find()
     .populate("reservationUserId", "fullName email phoneNumber")
     .sort({ date: -1, startTimeInMinutes: -1 });
 
   return res.status(200).json(
-    new ApiResponse(200, reservations, "All reservations fetched")
+    new ApiResponse(200, data, "All reservations")
   );
 });
 
-// Summary
+// ===================== SUMMARY =====================
 const getReservationSummary = asyncHandler(async (req, res) => {
-  const summary = await Reservation.aggregate([
+  const result = await Reservation.aggregate([
     {
       $group: {
         _id: "$tableReservationStatus",
-        count: { $sum: 1 }
-      }
-    }
+        count: { $sum: 1 },
+      },
+    },
   ]);
 
-  const formatted = {
+  const summary = {
     Pending: 0,
     Confirm: 0,
     Completed: 0,
-    Cancelled: 0
+    Cancelled: 0,
   };
 
-  summary.forEach(item => {
-    if (item._id) {
-      formatted[item._id] = item.count;
-    }
+  result.forEach((r) => {
+    summary[r._id] = r.count;
   });
 
   return res.status(200).json(
-    new ApiResponse(200, formatted, "Summary fetched")
+    new ApiResponse(200, summary, "Summary fetched")
   );
 });
 
@@ -287,5 +268,5 @@ export {
   updateReservationStatus,
   getUserReservations,
   getAllReservations,
-  getReservationSummary
+  getReservationSummary,
 };

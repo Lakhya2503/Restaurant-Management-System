@@ -15,7 +15,6 @@ const userSchema = new  Schema(
       email : {
         type : String,
         required: true,
-        unique : true,
         lowercase : true,
          match: [/^[^\s@]+@[^\s@]+\.[^\s@]+$/, 'Email format is incorrect. Use a valid format such as name@example.com (e.g., jane.smith@gmail.com) .']
       },
@@ -114,21 +113,22 @@ userSchema.methods.generateRefreshToken = function() {
    })
 }
 
-userSchema.generateTemporaryToken = function() {
-  const unHashedToken = crypto.randomBytes(20).toString('hex')
-  const hashedToken = crypto
-                                                      .createHash("sha256")
-                                                      .update(unHashedToken)
-                                                      .digest("hex")
+userSchema.methods.generateTemporaryToken = function () {
+  const unHashedToken = crypto.randomBytes(20).toString("hex");
 
-  const tokenExpiry =  Date.now() + USER_TEMPORARY_TOKEN
+  const hashedToken = crypto
+    .createHash("sha256")
+    .update(unHashedToken)
+    .digest("hex");
+
+  const tokenExpiry = Date.now() + 10 * 60 * 1000; 
 
   return {
-      unHashedToken,
-      hashedToken,
-      tokenExpiry
-  }
-}
+    unHashedToken,
+    hashedToken,
+    tokenExpiry,
+  };
+};
 
 const User = mongoose.model("User",userSchema)
 export default User;

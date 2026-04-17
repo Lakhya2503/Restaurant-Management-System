@@ -44,6 +44,12 @@ const AdminUsers = () => {
     u.phoneNumber?.toString().includes(searchTerm)
   );
 
+  // Helper function to get display role name
+  const getDisplayRole = (role: string) => {
+    if (role?.toLowerCase() === 'admin') return 'Admin';
+    return 'Customer';
+  };
+
   return (
     <div className="animate-fade-in">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
@@ -137,7 +143,7 @@ const AdminUsers = () => {
                         }`}>
                           <div className="flex items-center gap-1">
                             <Shield className="w-3 h-3" />
-                            {user.role}
+                            {getDisplayRole(user.role)}
                           </div>
                         </div>
                       </div>
@@ -186,7 +192,7 @@ const AdminUsers = () => {
               </div>
               <div>
                 <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Admins</p>
-                <p className="text-2xl font-extrabold text-foreground">{users.filter(u => u.role === 'ADMIN').length}</p>
+                <p className="text-2xl font-extrabold text-foreground">{users.filter(u => u.role?.toLowerCase() === 'admin').length}</p>
               </div>
             </div>
           </div>
@@ -197,7 +203,7 @@ const AdminUsers = () => {
               </div>
               <div>
                 <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Customers</p>
-                <p className="text-2xl font-extrabold text-foreground">{users.filter(u => u.role !== 'ADMIN').length}</p>
+                <p className="text-2xl font-extrabold text-foreground">{users.filter(u => u.role?.toLowerCase() !== 'admin').length}</p>
               </div>
             </div>
           </div>

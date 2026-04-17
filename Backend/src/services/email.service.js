@@ -490,3 +490,144 @@ export const emailService = async (
     );
   }
 };
+
+import { verifyEmailURi } from "../utils/config.js";
+
+
+export const sendEmailVerifyUser = async (
+  email,
+  name,
+  unHashedToken,
+  options = {}
+) => {
+  requiredField([email, name, unHashedToken]);
+
+  const { retryCount = 3, testMode = false } = options;
+
+  const verifyLink = `${verifyEmailURi}/verify-email?token=${unHashedToken}`;
+
+  const sendWithRetry = async (emailData, attempt = 1) => {
+    try {
+      if (testMode) {
+        console.log("📧 [TEST MODE] Verify email would be sent:", {
+          to: email,
+          verifyLink,
+          attempt,
+        });
+
+        return {
+          success: true,
+          messageId: `test_${Date.now()}`,
+          testMode: true,
+          recipient: email,
+        };
+      }
+
+      const response =
+        await apiInstance.transactionalEmails.sendTransacEmail(emailData);
+
+      return {
+        success: true,
+        messageId: response.messageId,
+        recipient: email,
+        attempt,
+      };
+    } catch (error) {
+      if (attempt < retryCount) {
+        const delay = 1000 * Math.pow(2, attempt - 1);
+
+        console.warn(
+          `⚠️ Verify email failed (attempt ${attempt}/${retryCount}), retrying...`,
+          {
+            error: error.message,
+            recipient: email,
+          }
+        );
+
+        await new Promise((r) => setTimeout(r, delay));
+        return sendWithRetry(emailData, attempt + 1);
+      }
+
+      throw error;
+    }
+  };
+
+  try {
+    const sendSmtpEmail = {
+      sender: {
+        email: brevoSenderEmail,
+        name: brevoSenderName,
+      },
+
+      to: [
+        {
+          email,
+          name,
+        },
+      ],
+
+      subject: "🔐 Verify your email - Athenura",
+
+      htmlContent: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Email Verification</title>
+      </head>
+
+      <body style="font-family: Arial; background:#f3f4f6; padding:40px;">
+        <div style="max-width:600px;margin:auto;background:white;padding:30px;border-radius:12px;text-align:center;">
+
+          <h2>👋 Welcome ${name}</h2>
+
+          <p>Please verify your email to activate your account.</p>
+
+          <a href="${verifyLink}"
+             style="display:inline-block;margin-top:20px;padding:12px 24px;
+             background:#10b981;color:white;text-decoration:none;border-radius:999px;">
+             Verify Email
+          </a>
+
+          <p style="margin-top:20px;font-size:12px;color:#6b7280;word-break:break-all;">
+            ${verifyLink}
+          </p>
+
+          <p style="margin-top:30px;font-size:11px;color:#9ca3af;">
+            If you did not create this account, ignore this email.
+          </p>
+
+        </div>
+      </body>
+      </html>
+      `,
+
+      tags: ["Auth", "VerifyEmail"],
+
+      headers: {
+        "X-Mailer": "Athenura-Auth-System",
+      },
+    };
+
+    const response = await sendWithRetry(sendSmtpEmail);
+
+    return {
+      success: true,
+      messageId: response.messageId,
+      recipient: email,
+      testMode: response.testMode || false,
+    };
+  } catch (error) {
+    console.error("❌ Verify email send failed:", {
+      error: error.message,
+      email,
+    });
+
+    throw new ApiError(
+      500,
+      error.message || "Failed to send verification email",
+      { email }
+    );
+  }
+};
