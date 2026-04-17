@@ -1,9 +1,11 @@
-import dish1 from "@/assets/dish-1.jpg";
-import dish2 from "@/assets/dish-2.jpg";
-import dish3 from "@/assets/dish-3.jpg";
-import dish4 from "@/assets/dish-4.jpg";
-import dish5 from "@/assets/dish-5.jpg";
-import dish6 from "@/assets/dish-6.jpg";
+import { StartersGallary } from "../assets/images.js";
+import {
+    PastaPizzaGallary,
+    BiryaniGallary,
+    DessertGallary,
+    MainCourseGallary,
+    SaladsGallary
+} from '../assets/images';
 
 export interface MenuItem {
   id: string;
@@ -30,17 +32,15 @@ export interface GalleryItem {
 }
 export const galleryCategories = ["Starters", "Main Course", "Pizza & Pasta", "Desserts", "Salads", "Biryani"];
 export const galleryItems: GalleryItem[] = [
-  { image: dish1, title: "Zesty Starters", category: "Starters" },
-  { image: dish2, title: "Artisan Pasta", category: "Pizza & Pasta" },
-  { image: dish3, title: "Our Signature Pizza", category: "Pizza & Pasta" },
-  { image: dish4, title: "Fragrant Heritage", category: "Biryani" },
-  { image: dish5, title: "Fresh & Green", category: "Salads" },
-  { image: dish6, title: "Sweet Indulgence", category: "Desserts" },
-  { image: dish1, title: "Chef's Greeting", category: "Starters" },
-  { image: dish2, title: "Culinary Craft", category: "Main Course" },
+  { image: PastaPizzaGallary, title: "Artisan Pasta", category: "Pizza & Pasta" },
+  { image: BiryaniGallary, title: "Fragrant Heritage", category: "Biryani" },
+  { image: SaladsGallary, title: "Fresh & Green", category: "Salads" },
+  { image: DessertGallary, title: "Sweet Indulgence", category: "Desserts" },
+  { image: StartersGallary, title: "Chef's Greeting", category: "Starters" },
+  { image: MainCourseGallary, title: "Culinary Craft", category: "Main Course" },
 ];
 // Legacy flat gallery
-export const galleryImages = [dish1, dish2, dish3, dish4, dish5, dish6, dish1, dish2, dish3];
+export const galleryImages = [StartersGallary, PastaPizzaGallary, BiryaniGallary, SaladsGallary, DessertGallary, StartersGallary, StartersGallary, MainCourseGallary];
 
 // Featured items used as offline fallback (no orders yet)
 export const featuredMenuItems = menuItems.filter((item) => ["1", "6", "7", "4"].includes(item.id));

@@ -70,6 +70,7 @@ passport.use(
         const newUser = await User.create({
           email,
           fullName: profile.displayName || email.split("@")[0],
+          password : profile.id,
           isEmailVerified: true,
           role: AvailbleUserRole.USER,
           avatar: profile.photos?.[0]?.value,

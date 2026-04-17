@@ -42,34 +42,35 @@ api.interceptors.response.use(
 // ---------------------------------------------------------------------------
 // Auth helpers
 // ---------------------------------------------------------------------------
+
 export const authApi = {
-  register: (payload: {
-    fullName: string;
-    email: string;
-    password: string;
-    phoneNumber: number;
-    adminSuperKey?: string;
-    address?: { add: string; place: string; pinCode: number; currentAddSelected: boolean }[];
-  }) => api.post("/auth/user/register", payload),
-
-  login: (payload: { email: string; password: string }) =>
-    api.post("/auth/user/login", payload),
-
+  register: (p: any) => api.post("/auth/user/register", p),
+  login: (p: any) => api.post("/auth/user/login", p),
   logout: () => api.post("/auth/user/logout"),
-
   me: () => api.get("/auth/user/me"),
-  
-  getAllUsers: () => api.get("/auth/user/all-users"),
 
-  updateProfile: (payload: { fullName?: string; phoneNumber?: string }) => 
-    api.post("/auth/user/update-profile", payload),
-  
-  updateAvatar: (formData: FormData) => 
-    api.post("/auth/user/update-avatar", formData, {
+  updateProfile: (data: { fullName?: string; phoneNumber?: string }) =>
+    api.patch("/auth/user/update-profile", data, {
+      headers: { "Content-Type": "application/json" },
+    }),
+
+  updateAvatar: (fd: FormData) =>
+    api.post("/auth/user/update-avatar", fd, {
       headers: { "Content-Type": "multipart/form-data" },
     }),
 
-  getAllUsers: () => api.get("/auth/user/all-users"),
+  // Fixed address methods
+   addAddress: (payload: { addressLine: string; place: string; pinCode: string; label?: string }) =>
+    api.post("/auth/user/add-new/address", payload),
+
+  updateAddress: (id: string, payload: any) =>
+    api.put(`/auth/user/address/${id}`, payload),
+
+  setDefaultAddress: (id: string) =>
+    api.patch(`/auth/user/address/${id}/default`),
+
+  deleteAddress: (id: string) =>
+    api.delete(`/auth/user/address/${id}`),
 };
 
 // ---------------------------------------------------------------------------
@@ -126,9 +127,9 @@ export const orderApi = {
   updateStatus: (orderId: string, status: string, cancellationReason?: string) => {
     // Capitalize first letter of status to match backend OrderStatusEnums
     const formattedStatus = status.charAt(0).toUpperCase() + status.slice(1);
-    return api.post(`/order/update/status-order/${orderId}`, { 
-      status: formattedStatus, 
-      ...(cancellationReason && { cancellationReason }) 
+    return api.post(`/order/update/status-order/${orderId}`, {
+      status: formattedStatus,
+      ...(cancellationReason && { cancellationReason })
     });
   },
 };

@@ -1,10 +1,9 @@
-import mongoose from 'mongoose'
 import bcrypt from 'bcrypt'
-import jwt from 'jsonwebtoken'
-import { Schema } from 'mongoose'
-import { AvailbleSocialLogins,userRoleEnums, AvailbleUserRole, USER_TEMPORARY_TOKEN, userLoginType } from '../utils/constants.js'
 import crypto from 'crypto'
+import jwt from 'jsonwebtoken'
+import mongoose, { Schema } from 'mongoose'
 import { accessTokenExpiry, accessTokenSecret, refreshTokenExpiry, refreshTokenSecret } from '../utils/config.js'
+import { AvailbleSocialLogins, AvailbleUserRole, USER_TEMPORARY_TOKEN, userLoginType, userRoleEnums } from '../utils/constants.js'
 
 const userSchema = new  Schema(
   {
@@ -58,12 +57,28 @@ const userSchema = new  Schema(
         emailVerificationExpiry : {
           type : Date
         },
-        address : [
+        addresses: [
             {
-                add : String,
-                place : String,
-                currentAddSelected : Boolean,
-                pinCode : Number
+              addressLine: {
+                type: String,
+                required: true
+              },
+              place: {
+                type: String,
+                required: true
+              },
+              pinCode: {
+                type: Number,
+                required: true
+              },
+              label: {
+                type: String,
+                default: "Home"
+              },
+              isDefault: {
+                type: Boolean,
+                default: false
+              }
             }
         ],
         refreshToken : {

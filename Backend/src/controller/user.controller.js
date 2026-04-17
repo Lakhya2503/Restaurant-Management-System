@@ -66,7 +66,7 @@ const registerUser = asyncHandler(async(req,res)=>{
           avatar : avatarURI ? avatarURI.url : avatarURI,
           phoneNumber,
           role : role,
-          address : address
+          addresses : address
         })
 
       await removeRefreshTokenAndPassword(user._id)
@@ -124,6 +124,8 @@ const logoutUser = asyncHandler(async(req,res)=>{
 
 const updateAccountDetails = asyncHandler(async (req, res) => {
   const { fullName, phoneNumber } = req.body;
+
+  console.log(req.body)
 
   if (!fullName && !phoneNumber) {
     throw new ApiError(400, "FullName or PhoneNumber is required");
@@ -282,16 +284,140 @@ const googleLoginCallback = asyncHandler(async (req, res) => {
     .redirect(`${process.env.CLIENT_URL || "http://localhost:8080"}${redirectUrl}`);
 });
 
+const  newUserAddress = asyncHandler(async(req,res)=>{
+
+    const { addressLine, place, pinCode, label } = req.body
+
+    if (!addressLine || !place || !pinCode) {
+      throw new ApiError(400, "All address fields are required");
+    }
+
+    let addData = {
+        addressLine,
+        place,
+        pinCode,
+        label: label || "Home",
+        isDefault: false
+    }
+
+    console.log("Adding address:", addData)
+
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      throw new ApiError(404, "User not found");
+    }
+
+    // If this is the first address, make it default
+    if (!user.addresses || user.addresses.length === 0) {
+      addData.isDefault = true;
+    }
+
+    const addUserAddress = await User.findByIdAndUpdate(
+        req.user._id,
+        { $push: { addresses: addData } },
+        { new: true }
+      ).select("-password -refreshToken");
+
+
+      if(!addUserAddress) {
+        throw new ApiError(400, "User address can't add")
+      }
+
+  return res.status(200).json(new ApiResponse(200, addUserAddress, "User address add successfully"))
+})
+
+const updateUserAddress = asyncHandler(async (req, res) => {
+  const { addressId } = req.params;
+  const { addressLine, place, pinCode, label, isDefault } = req.body;
+
+  if (!addressLine || !place || !pinCode) {
+    throw new ApiError(400, "All address fields are required");
+  }
+
+  const user = await User.findById(req.user._id);
+
+  if (!user) {
+    throw new ApiError(404, "User not found");
+  }
+
+  // If setting as default, unset all other defaults
+  if (isDefault) {
+    user.addresses.forEach(addr => {
+      addr.isDefault = false;
+    });
+  }
+
+  // Find and update the specific address
+  const addressIndex = user.addresses.findIndex(
+    addr => addr._id.toString() === addressId
+  );
+
+  if (addressIndex === -1) {
+    throw new ApiError(404, "Address not found");
+  }
+
+  user.addresses[addressIndex] = {
+    ...user.addresses[addressIndex].toObject(),
+    addressLine,
+    place,
+    pinCode,
+    label: label || user.addresses[addressIndex].label,
+    isDefault: isDefault || user.addresses[addressIndex].isDefault
+  };
+
+  await user.save();
+
+  const updatedUser = await User.findById(user._id).select("-password -refreshToken");
+
+  return res.status(200).json(
+    new ApiResponse(200, updatedUser, "Address updated successfully")
+  );
+});
+
+const setDefaultAddress = asyncHandler(async (req, res) => {
+  const { addressId } = req.params;
+
+  const user = await User.findById(req.user._id);
+
+  if (!user) {
+    throw new ApiError(404, "User not found");
+  }
+
+  user.addresses.forEach(addr => {
+    addr.isDefault = addr._id.toString() === addressId;
+  });
+
+  await user.save();
+
+  const updatedUser = await User.findById(user._id).select("-password -refreshToken");
+
+  return res.status(200).json(
+    new ApiResponse(200, updatedUser, "Default address updated")
+  );
+});
+
+const deleteAddress = asyncHandler(async (req, res) => {
+  const { addressId } = req.params;
+
+  const user = await User.findByIdAndUpdate(
+    req.user._id,
+    {
+      $pull: {
+        addresses: { _id: addressId }
+      }
+    },
+    { new: true }
+  ).select("-password -refreshToken");
+
+  return res.status(200).json(
+    new ApiResponse(200, user, "Address deleted successfully")
+  );
+});
+
+
 export {
-    changeCurrentPassword,
-    loginUser,
-    logoutUser,
-    registerUser,
-    verifyEmail,
-    verifyEmailRequest,
-    allUsers,
-    googleLoginCallback,
-    currentUser,
-    updateAccountDetails,
-    updateUserAvatar
+  allUsers, changeCurrentPassword, currentUser, deleteAddress, googleLoginCallback, loginUser,
+  logoutUser, newUserAddress, registerUser, setDefaultAddress, updateAccountDetails, updateUserAddress, updateUserAvatar, verifyEmail,
+  verifyEmailRequest
 };

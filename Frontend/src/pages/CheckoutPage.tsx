@@ -1,12 +1,12 @@
-import { useState, useEffect } from "react";
-import { useCart } from "@/context/CartContext";
+import { Button } from "@/components/ui/button";
 import { useAuth } from "@/context/AuthContext";
+import { useCart } from "@/context/CartContext";
 import { useOrders } from "@/context/OrderContext";
 import { useTableOrders } from "@/context/TableOrderContext";
-import { Button } from "@/components/ui/button";
-import { toast } from "sonner";
+import { CheckCircle2, CreditCard, FileText, IndianRupee, LogIn, MapPin, Minus, Phone, Plus, ShieldCheck, ShoppingBag, Sparkles, Trash2, Truck, User, UtensilsCrossed, Wallet, X } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CreditCard, Wallet, IndianRupee, LogIn, ShoppingBag, MapPin, Phone, User, FileText, Minus, Plus, Trash2, ShieldCheck, Truck, Clock, UtensilsCrossed, CheckCircle2, Sparkles, X } from "lucide-react";
+import { toast } from "sonner";
 
 // Load Razorpay script
 const loadRazorpayScript = () => {
@@ -35,33 +35,25 @@ const CheckoutPage = () => {
   // Prefill form with user data if logged in
   useEffect(() => {
     if (user) {
-      const primaryAddress = user.addresses?.find((a) => a.isPrimary);
+      const primaryAddress = user.addresses?.find((a) => a.isDefault);
       setForm((prev) => ({
         ...prev,
         name: user.name || prev.name,
         phone: user.phone || prev.phone,
-        address: primaryAddress?.fullAddress || prev.address,
-        selectedAddressId: primaryAddress?.id || "",
+        address: primaryAddress ? `${primaryAddress.addressLine}, ${primaryAddress.place} - ${primaryAddress.pinCode}` : prev.address,
+        selectedAddressId: primaryAddress?._id || "",
       }));
-      // Auto-load table number from confirmed reservation with assigned table
-      const reservations = getUserReservations(user.id);
-      const confirmedWithTable = reservations.find(
-        (r) => r.status === "confirmed" && r.assignedTable
-      );
-      if (confirmedWithTable?.assignedTable) {
-        setTableNumber(confirmedWithTable.assignedTable);
-      }
     }
-  }, [user, getUserReservations]);
+  }, [user]);
 
   const update = (field: string, value: string) => setForm((p) => ({ ...p, [field]: value }));
 
   const handleAddressSelect = (addressId: string) => {
-    const selectedAddr = user?.addresses?.find((a) => a.id === addressId);
+    const selectedAddr = user?.addresses?.find((a) => a._id === addressId);
     if (selectedAddr) {
       setForm((prev) => ({
         ...prev,
-        address: selectedAddr.fullAddress,
+        address: `${selectedAddr.addressLine}, ${selectedAddr.place} - ${selectedAddr.pinCode}`,
         selectedAddressId: addressId,
       }));
     }
@@ -447,12 +439,12 @@ const CheckoutPage = () => {
                         <label className="font-body text-sm font-medium mb-3 block flex items-center gap-2">
                           <MapPin className="w-4 h-4 text-primary" /> Saved Addresses
                         </label>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                        <div className="grid grid-cols-1 gap-3 mb-3">
                           {user.addresses.map((addr) => (
                             <label
-                              key={addr.id}
+                              key={addr._id}
                               className={`flex items-start gap-3 p-4 border-2 rounded-xl cursor-pointer transition-all ${
-                                form.selectedAddressId === addr.id
+                                form.selectedAddressId === addr._id
                                   ? "border-primary bg-primary/5 shadow-sm"
                                   : "border-border hover:border-primary/40"
                               }`}
@@ -460,13 +452,22 @@ const CheckoutPage = () => {
                               <input
                                 type="radio"
                                 name="savedAddress"
-                                checked={form.selectedAddressId === addr.id}
-                                onChange={() => handleAddressSelect(addr.id)}
+                                checked={form.selectedAddressId === addr._id}
+                                onChange={() => handleAddressSelect(addr._id)}
                                 className="mt-1 w-4 h-4 text-primary"
                               />
                               <div className="flex-1">
-                                <p className="font-body font-semibold text-sm">{addr.label}</p>
-                                <p className="font-body text-xs text-muted-foreground mt-0.5">{addr.fullAddress}</p>
+                                <div className="flex items-center gap-2 mb-1">
+                                  <p className="font-body font-semibold text-sm">{addr.label || "Address"}</p>
+                                  {addr.isDefault && (
+                                    <span className="px-2 py-0.5 bg-primary/10 text-primary text-xs rounded-full font-medium">
+                                      Default
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="font-body text-xs text-muted-foreground">
+                                  {addr.addressLine}, {addr.place} - {addr.pinCode}
+                                </p>
                               </div>
                             </label>
                           ))}

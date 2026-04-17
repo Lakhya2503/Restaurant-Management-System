@@ -8,7 +8,11 @@ import {
   verifyEmail,
   googleLoginCallback,
   updateAccountDetails,
-  updateUserAvatar
+  updateUserAvatar,
+  deleteAddress,
+  setDefaultAddress,
+  updateUserAddress,
+  newUserAddress
 } from "../controller/user.controller.js"
 import { verifyAdmin, verifyJWT } from "../middleware/auth.middelware.js"
 import passport from "../passport/index.js"
@@ -40,9 +44,24 @@ router.route("/user/email-verify").post(verifyJWT, verifyEmail)
 router.route("/user/all-users").get(verifyAdmin, allUsers)
 
 router.route("/user/me").get(verifyJWT, currentUser)
-router.route("/user/update-profile").post(verifyJWT, updateAccountDetails)
+router.route("/user/update-profile").patch(verifyJWT, updateAccountDetails)
+
 router.route("/user/update-avatar").post(verifyJWT, uploadAvatar.single('avatar'), updateUserAvatar)
 
+router.route('/user/add-new/address').post(verifyJWT, newUserAddress)
+
+router
+  .route("/user/address")
+  .post(verifyJWT, updateUserAddress);
+
+
+router
+  .route("/user/address/:addressId/default")
+  .patch(verifyJWT, setDefaultAddress);
+
+router
+  .route("/user/address/:addressId")
+  .delete(verifyJWT, deleteAddress);
 
 router.get(
   "/callback/google",

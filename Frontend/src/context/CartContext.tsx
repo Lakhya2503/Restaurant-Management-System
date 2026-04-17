@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from "react";
+import React, { createContext, useCallback, useContext, useState } from "react";
 
 export interface CartItem {
   id: string;
@@ -23,32 +23,66 @@ interface CartContextType {
 const CartContext = createContext<CartContextType | undefined>(undefined);
 
 export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [items, setItems] = useState<CartItem[]>([]);
+  // Initialize cart from localStorage if available
+  const [items, setItems] = useState<CartItem[]>(() => {
+    try {
+      const savedCart = localStorage.getItem("restaurant-cart");
+      return savedCart ? JSON.parse(savedCart) : [];
+    } catch (error) {
+      console.error("Failed to load cart from localStorage:", error);
+      return [];
+    }
+  });
   const [isCartOpen, setIsCartOpen] = useState(false);
+
+  // Save cart to localStorage whenever it changes
+  const saveCartToStorage = (cartItems: CartItem[]) => {
+    try {
+      localStorage.setItem("restaurant-cart", JSON.stringify(cartItems));
+    } catch (error) {
+      console.error("Failed to save cart to localStorage:", error);
+    }
+  };
 
   const addItem = useCallback((item: Omit<CartItem, "qty">) => {
     setItems((prev) => {
       const existing = prev.find((i) => i.id === item.id);
+      let newItems;
       if (existing) {
-        return prev.map((i) => (i.id === item.id ? { ...i, qty: i.qty + 1 } : i));
+        newItems = prev.map((i) => (i.id === item.id ? { ...i, qty: i.qty + 1 } : i));
+      } else {
+        newItems = [...prev, { ...item, qty: 1 }];
       }
-      return [...prev, { ...item, qty: 1 }];
+      saveCartToStorage(newItems);
+      return newItems;
     });
   }, []);
 
   const removeItem = useCallback((id: string) => {
-    setItems((prev) => prev.filter((i) => i.id !== id));
+    setItems((prev) => {
+      const newItems = prev.filter((i) => i.id !== id);
+      saveCartToStorage(newItems);
+      return newItems;
+    });
   }, []);
 
   const updateQty = useCallback((id: string, qty: number) => {
-    if (qty <= 0) {
-      setItems((prev) => prev.filter((i) => i.id !== id));
-    } else {
-      setItems((prev) => prev.map((i) => (i.id === id ? { ...i, qty } : i)));
-    }
+    setItems((prev) => {
+      let newItems;
+      if (qty <= 0) {
+        newItems = prev.filter((i) => i.id !== id);
+      } else {
+        newItems = prev.map((i) => (i.id === id ? { ...i, qty } : i));
+      }
+      saveCartToStorage(newItems);
+      return newItems;
+    });
   }, []);
 
-  const clearCart = useCallback(() => setItems([]), []);
+  const clearCart = useCallback(() => {
+    setItems([]);
+    saveCartToStorage([]);
+  }, []);
 
   const totalItems = items.reduce((sum, i) => sum + i.qty, 0);
   const totalPrice = items.reduce((sum, i) => sum + i.price * i.qty, 0);

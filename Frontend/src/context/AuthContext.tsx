@@ -1,23 +1,17 @@
-import React, {
-  createContext,
-  useContext,
-  useState,
-  useCallback,
-  useEffect,
-} from "react";
 import { authApi } from "@/lib/api";
+import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { toast } from "sonner";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-export interface Address {
-  id: string;
-  label: string; // "Home" | "Work" | "Other"
-  fullAddress: string;
-  isPrimary: boolean;
+interface Address {
+  _id: string;
+  addressLine: string;
+  place: string;
+  pinCode: string;
+  label?: string;
+  isDefault: boolean;
 }
 
-export interface AppUser {
+interface AppUser {
   id: string;
   name: string;
   email: string;
@@ -25,228 +19,328 @@ export interface AppUser {
   role: "user" | "admin";
   phone?: string;
   addresses?: Address[];
-}
-
-/** Shape the backend register endpoint expects */
-export interface RegisterPayload {
-  fullName: string;
-  email: string;
-  password: string;
-  phoneNumber: number;
-  adminSuperKey?: string;
-  address?: {
-    add: string;
-    place: string;
-    pinCode: number;
-    currentAddSelected: boolean;
-  }[];
+  isEmailVerified?: boolean;
 }
 
 interface AuthContextType {
   user: AppUser | null;
   isLoggedIn: boolean;
   isLoading: boolean;
-  // Real API actions
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
-  signup: (payload: RegisterPayload) => Promise<void>;
-  // API Profile Updates
-  updateProfile: (fullName: string, phoneNumber: string) => Promise<void>;
+  signup: (payload: any) => Promise<void>;
+  updateProfile: (data: {
+    fullName?: string;
+    phoneNumber?: string;
+  }) => Promise<void>;
   updateAvatar: (file: File) => Promise<void>;
-  // Local-only helpers
-  addAddress: (address: Omit<Address, "id">) => void;
-  updateAddress: (id: string, updates: Partial<Address>) => void;
-  deleteAddress: (id: string) => void;
-  setPrimaryAddress: (id: string) => void;
-  // Dev-only: kept so existing admin buttons still compile
-  loginAsAdmin: () => void;
+  addAddress: (payload: { addressLine: string; place: string; pinCode: string; label?: string }) => Promise<void>;
+  updateAddress: (id: string, payload: { addressLine: string; place: string; pinCode: string; label?: string }) => Promise<void>;
+  deleteAddress: (id: string) => Promise<void>;
+  setPrimaryAddress: (id: string) => Promise<void>;
+  refreshUser: () => Promise<void>;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers — map backend user shape → frontend AppUser
-// ---------------------------------------------------------------------------
-function mapBackendUser(raw: Record<string, unknown>): AppUser {
-  return {
-    id: String(raw._id ?? raw.id ?? ""),
-    name: String(raw.fullName ?? raw.name ?? ""),
-    email: String(raw.email ?? ""),
-    avatar:
-      String(raw.avatar ?? "") ||
-      `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(
-        String(raw.fullName ?? "user")
-      )}&backgroundColor=b6e3f4&radius=50`,
-    role: (raw.role as "user" | "admin") ?? "user",
-    phone: raw.phoneNumber ? String(raw.phoneNumber) : undefined,
-    addresses: Array.isArray(raw.address)
-      ? (raw.address as Record<string, unknown>[]).map((a, i) => ({
-          id: String(a._id ?? i),
-          label: String(a.place ?? "Home"),
-          fullAddress: String(a.add ?? ""),
-          isPrimary: Boolean(a.currentAddSelected),
-        }))
-      : [],
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Fallback admin for dev-only button
-// ---------------------------------------------------------------------------
-const mockAdmin: AppUser = {
-  id: "a1",
-  name: "Admin Chef",
-  email: "admin@athenura.in",
-  avatar:
-    "https://api.dicebear.com/7.x/avataaars/svg?seed=Admin&backgroundColor=ffd5dc&radius=50",
-  role: "admin",
-  phone: "+91 99999 00000",
-  addresses: [],
-};
-
-// ---------------------------------------------------------------------------
-// Context
-// ---------------------------------------------------------------------------
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
-  children,
-}) => {
+const getFullAddress = (address: Address): string => {
+  return `${address.addressLine}, ${address.place} - ${address.pinCode}`;
+};
+
+const mapUser = (u: any): AppUser => {
+  console.log("Mapping user data:", u);
+  console.log("User addresses:", u.addresses);
+
+  return {
+    id: u._id || u.id,
+    name: u.fullName || u.name || "User",
+    email: u.email,
+    avatar: u.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${u.fullName || u.name || "user"}`,
+    role: u.role || "user",
+    phone: u.phoneNumber || u.phone,
+    addresses: u.addresses?.map((addr: any) => ({
+      _id: addr._id,
+      addressLine: addr.addressLine,
+      place: addr.place,
+      pinCode: addr.pinCode?.toString() || "",
+      label: addr.label || "Home",
+      isDefault: addr.isDefault || false,
+    })) || [],
+    isEmailVerified: u.isEmailVerified || false,
+  };
+};
+
+export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<AppUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // -------------------------------------------------------------------------
-  // On mount — try to rehydrate from the httpOnly cookie via /auth/user/me
-  // -------------------------------------------------------------------------
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await authApi.me();
-        const raw = res.data?.data ?? res.data;
-        if (raw) setUser(mapBackendUser(raw));
-      } catch {
-        // Not logged in — that's fine
-      } finally {
-        setIsLoading(false);
+  const refreshUser = useCallback(async () => {
+    try {
+      const res = await authApi.me();
+      console.log("Fetch user response:", res);
+
+      const raw = res.data?.data ?? res.data;
+      if (raw) {
+        const mappedUser = mapUser(raw);
+        setUser(mappedUser);
+        return mappedUser;
       }
-    })();
+    } catch (error) {
+      console.error("Failed to fetch user:", error);
+      if (error instanceof Error && error.message.includes("401")) {
+        setUser(null);
+        sessionStorage.removeItem("accessToken");
+      }
+    }
+    return null;
   }, []);
 
-  // -------------------------------------------------------------------------
-  // Signup
-  // -------------------------------------------------------------------------
-  const signup = useCallback(async (payload: RegisterPayload) => {
-    const res = await authApi.register(payload);
-    const raw = res.data?.data ?? res.data;
-    if (raw?.user) setUser(mapBackendUser(raw.user));
-  }, []);
+  useEffect(() => {
+    const initAuth = async () => {
+      await refreshUser();
+      setIsLoading(false);
+    };
+    initAuth();
+  }, [refreshUser]);
 
-  // -------------------------------------------------------------------------
-  // Login
-  // -------------------------------------------------------------------------
   const login = useCallback(async (email: string, password: string) => {
-    const res = await authApi.login({ email, password });
-    const raw = res.data?.data ?? res.data;
-    // Some backends return token in response; store in sessionStorage
-    if (raw?.accessToken) {
-      sessionStorage.setItem("accessToken", raw.accessToken);
-    }
-    if (raw?.user) {
-      setUser(mapBackendUser(raw.user));
-    } else if (raw && raw.email) {
-      // backend returned the user object directly
-      setUser(mapBackendUser(raw));
+    try {
+      const res = await authApi.login({ email, password });
+      const raw = res.data?.data ?? res.data;
+
+      if (raw?.accessToken) {
+        sessionStorage.setItem("accessToken", raw.accessToken);
+      }
+
+      if (raw?.user) {
+        setUser(mapUser(raw.user));
+      } else if (raw?.email) {
+        setUser(mapUser(raw));
+      }
+
+      toast.success("Login successful!");
+    } catch (error: any) {
+      toast.error(error.message || "Login failed");
+      throw error;
     }
   }, []);
 
-  // -------------------------------------------------------------------------
-  // Dev-only admin login (no backend call)
-  // -------------------------------------------------------------------------
-  const loginAsAdmin = useCallback(() => {
-    setUser(mockAdmin);
+  const signup = useCallback(async (payload: any) => {
+    try {
+      const res = await authApi.register(payload);
+      const raw = res.data?.data ?? res.data;
+      if (raw?.user) {
+        setUser(mapUser(raw.user));
+        toast.success("Registration successful!");
+      }
+    } catch (error: any) {
+      toast.error(error.message || "Registration failed");
+      throw error;
+    }
   }, []);
 
-  // -------------------------------------------------------------------------
-  // Logout
-  // -------------------------------------------------------------------------
   const logout = useCallback(async () => {
     try {
       await authApi.logout();
-    } catch {
-      // Even if the endpoint fails, clear local state
+      toast.success("Logged out successfully");
+    } catch (error) {
+      console.error("Logout error:", error);
+    } finally {
+      sessionStorage.removeItem("accessToken");
+      setUser(null);
     }
-    sessionStorage.removeItem("accessToken");
-    setUser(null);
   }, []);
 
-  // -------------------------------------------------------------------------
-  // Local-only address / profile helpers (no dedicated API endpoints yet)
-  // -------------------------------------------------------------------------
-  const updateProfile = useCallback(async (fullName: string, phoneNumber: string) => {
-    const res = await authApi.updateProfile({ fullName, phoneNumber });
-    const raw = res.data?.data ?? res.data;
-    if (raw) setUser(mapBackendUser(raw));
-  }, []);
+  const updateProfile = useCallback(async (data: {
+    fullName?: string;
+    phoneNumber?: string;
+  }) => {
+    try {
+      console.log("Updating profile with data:", data);
+
+      // Send as JSON for text-only updates
+      const res = await authApi.updateProfile({
+        fullName: data.fullName,
+        phoneNumber: data.phoneNumber
+      });
+
+      console.log("Update profile response:", res);
+
+      const raw = res.data?.data ?? res.data;
+      console.log("Processed response data:", raw);
+
+      if (raw) {
+        // If the response includes the updated user
+        if (raw.user) {
+          setUser(mapUser(raw.user));
+          toast.success("Profile updated successfully!");
+        }
+        // If the response is the user object itself
+        else if (raw._id || raw.id) {
+          setUser(mapUser(raw));
+          toast.success("Profile updated successfully!");
+        }
+        // Otherwise, fetch the latest user data
+        else {
+          await refreshUser();
+          toast.success("Profile updated successfully!");
+        }
+      } else {
+        // If no data in response, fetch fresh user data
+        await refreshUser();
+        toast.success("Profile updated successfully!");
+      }
+    } catch (error: any) {
+      console.error("Update profile error:", error);
+      toast.error(error.message || "Failed to update profile");
+      throw error;
+    }
+  }, [refreshUser]);
 
   const updateAvatar = useCallback(async (file: File) => {
-    const formData = new FormData();
-    formData.append("avatar", file);
-    const res = await authApi.updateAvatar(formData);
-    const raw = res.data?.data ?? res.data;
-    if (raw) setUser(mapBackendUser(raw));
-  }, []);
+    try {
+      console.log("Uploading avatar:", file.name);
 
-  const addAddress = useCallback((address: Omit<Address, "id">) => {
-    setUser((prev) => {
-      if (!prev) return null;
-      const newAddr: Address = { ...address, id: `addr${Date.now()}` };
-      const addresses = prev.addresses ?? [];
-      const updated = newAddr.isPrimary
-        ? addresses.map((a) => ({ ...a, isPrimary: false }))
-        : [...addresses];
-      return { ...prev, addresses: [...updated, newAddr] };
-    });
-  }, []);
+      // Validate file
+      if (!file.type.startsWith('image/')) {
+        throw new Error("Please select an image file");
+      }
 
-  const updateAddress = useCallback(
-    (id: string, updates: Partial<Address>) => {
-      setUser((prev) => {
-        if (!prev?.addresses) return prev;
-        let addresses = prev.addresses.map((a) =>
-          a.id === id ? { ...a, ...updates } : a
-        );
-        if (updates.isPrimary) {
-          addresses = addresses.map((a) => ({
-            ...a,
-            isPrimary: a.id === id,
-          }));
+      if (file.size > 2 * 1024 * 1024) {
+        throw new Error("Image size must be less than 2MB");
+      }
+
+      // Create FormData for file upload
+      const formData = new FormData();
+      formData.append('avatar', file);
+
+      // Call the dedicated avatar update API
+      const res = await authApi.updateAvatar(formData);
+      const raw = res.data?.data ?? res.data;
+
+      console.log("Update avatar response:", res);
+      console.log("Processed response data:", raw);
+
+      if (raw) {
+        // If the response includes the updated user
+        if (raw.user) {
+          setUser(mapUser(raw.user));
+          toast.success("Avatar updated successfully!");
         }
-        return { ...prev, addresses };
-      });
-    },
-    []
-  );
+        // If the response is the user object itself
+        else if (raw._id || raw.id) {
+          setUser(mapUser(raw));
+          toast.success("Avatar updated successfully!");
+        }
+        // Otherwise, fetch the latest user data
+        else {
+          await refreshUser();
+          toast.success("Avatar updated successfully!");
+        }
+      } else {
+        // If no data in response, fetch fresh user data
+        await refreshUser();
+        toast.success("Avatar updated successfully!");
+      }
+    } catch (error: any) {
+      console.error("Update avatar error:", error);
+      toast.error(error.message || "Failed to update avatar");
+      throw error;
+    }
+  }, [refreshUser]);
 
-  const deleteAddress = useCallback((id: string) => {
-    setUser((prev) => {
-      if (!prev?.addresses) return prev;
-      const addresses = prev.addresses.filter((a) => a.id !== id);
-      const hadPrimary = prev.addresses.find((a) => a.id === id)?.isPrimary;
-      if (hadPrimary && addresses.length > 0) addresses[0].isPrimary = true;
-      return { ...prev, addresses };
-    });
-  }, []);
+  const addAddress = useCallback(async (payload: { addressLine: string; place: string; pinCode: string; label?: string }) => {
+    try {
+      console.log("Adding address:", payload);
+      const res = await authApi.addAddress(payload);
+      const raw = res.data?.data ?? res.data;
 
-  const setPrimaryAddress = useCallback((id: string) => {
-    setUser((prev) => {
-      if (!prev?.addresses) return prev;
-      return {
-        ...prev,
-        addresses: prev.addresses.map((a) => ({
-          ...a,
-          isPrimary: a.id === id,
-        })),
-      };
-    });
-  }, []);
+      if (raw) {
+        if (raw.user) {
+          setUser(mapUser(raw.user));
+        } else if (raw._id || raw.id) {
+          setUser(mapUser(raw));
+        } else {
+          await refreshUser();
+        }
+      }
+
+      toast.success("Address added successfully!");
+    } catch (error: any) {
+      console.error("Add address error:", error);
+      toast.error(error.message || "Failed to add address");
+      throw error;
+    }
+  }, [refreshUser]);
+
+  const updateAddress = useCallback(async (id: string, payload: { addressLine: string; place: string; pinCode: string; label?: string }) => {
+    try {
+      const res = await authApi.updateAddress(id, payload);
+      const raw = res.data?.data ?? res.data;
+
+      if (raw) {
+        if (raw.user) {
+          setUser(mapUser(raw.user));
+        } else if (raw._id || raw.id) {
+          setUser(mapUser(raw));
+        } else {
+          await refreshUser();
+        }
+      }
+
+      toast.success("Address updated successfully!");
+    } catch (error: any) {
+      console.error("Update address error:", error);
+      toast.error(error.message || "Failed to update address");
+      throw error;
+    }
+  }, [refreshUser]);
+
+  const deleteAddress = useCallback(async (id: string) => {
+    try {
+      const res = await authApi.deleteAddress(id);
+      const raw = res.data?.data ?? res.data;
+
+      if (raw) {
+        if (raw.user) {
+          setUser(mapUser(raw.user));
+        } else if (raw._id || raw.id) {
+          setUser(mapUser(raw));
+        } else {
+          await refreshUser();
+        }
+      }
+
+      toast.success("Address deleted successfully!");
+    } catch (error: any) {
+      console.error("Delete address error:", error);
+      toast.error(error.message || "Failed to delete address");
+      throw error;
+    }
+  }, [refreshUser]);
+
+  const setPrimaryAddress = useCallback(async (id: string) => {
+    try {
+      const res = await authApi.setDefaultAddress(id);
+      const raw = res.data?.data ?? res.data;
+
+      if (raw) {
+        if (raw.user) {
+          setUser(mapUser(raw.user));
+        } else if (raw._id || raw.id) {
+          setUser(mapUser(raw));
+        } else {
+          await refreshUser();
+        }
+      }
+
+      toast.success("Primary address updated!");
+    } catch (error: any) {
+      console.error("Set primary address error:", error);
+      toast.error(error.message || "Failed to set primary address");
+      throw error;
+    }
+  }, [refreshUser]);
 
   return (
     <AuthContext.Provider
@@ -256,7 +350,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         isLoading,
         login,
         logout,
-        loginAsAdmin,
         signup,
         updateProfile,
         updateAvatar,
@@ -264,6 +357,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         updateAddress,
         deleteAddress,
         setPrimaryAddress,
+        refreshUser,
       }}
     >
       {children}
@@ -273,9 +367,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
 export const useAuth = () => {
   const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
+  if (!ctx) throw new Error("useAuth must be used inside provider");
   return ctx;
 };
-
-// Re-export MockUser alias so any existing imports don't break
-export type MockUser = AppUser;

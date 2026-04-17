@@ -9,7 +9,7 @@ const TrendingPage = () => {
   const { menuItems, isLoading } = useMenu();
   const { orders } = useOrders();
 
-  // Tally total qty ordered per menu item across all non-cancelled orders
+
   const trendingItems = useMemo(() => {
     const tally: Record<string, number> = {};
 
