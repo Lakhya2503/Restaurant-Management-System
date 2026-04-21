@@ -7,7 +7,7 @@ import { reservationApi } from "@/lib/api";
 import {
   Plus, Minus, Trash2, UtensilsCrossed, ShoppingBag,
   Search, Hash, ChevronDown, Leaf, Drumstick,
-  AlertCircle, CheckCircle, Loader2
+  AlertCircle, CheckCircle, Loader2, Clock, Calendar
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -49,8 +49,9 @@ const TABLE_CAPACITIES: Record<number, number> = {
 
 const UserTableOrder = () => {
   const { menuItems, isLoading } = useMenu();
-  const { addTableOrder, tableOrders } = useTableOrders();
+  const { addTableOrder, tableOrders, refreshTableOrders } = useTableOrders();
   const { user } = useAuth();
+  const { refreshData } = useOrders();
   const [tableNumber, setTableNumber] = useState("");
   const [notes, setNotes] = useState("");
   const [search, setSearch] = useState("");
@@ -65,6 +66,9 @@ const UserTableOrder = () => {
   const [noOfGuests, setNoOfGuests] = useState(2);
   const [selectedDate, setSelectedDate] = useState("");
   const [selectedTime, setSelectedTime] = useState("");
+  const [selectedEndTime, setSelectedEndTime] = useState("");
+  const [duration, setDuration] = useState(2); // Duration in hours
+  const [isPlacingOrder, setIsPlacingOrder] = useState(false);
 
   // Set default date and time
   useEffect(() => {
@@ -73,12 +77,33 @@ const UserTableOrder = () => {
     const currentTime = today.toTimeString().slice(0, 5);
     setSelectedDate(formattedDate);
     setSelectedTime(currentTime);
+
+    // Set default end time (2 hours later)
+    const [hours, minutes] = currentTime.split(':').map(Number);
+    const endHours = hours + 2;
+    const endTimeStr = `${String(endHours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    setSelectedEndTime(endTimeStr);
   }, []);
 
-  // Fetch available tables - CORRECTED VERSION
+  // Update end time when start time or duration changes
+  useEffect(() => {
+    if (selectedTime && duration) {
+      const [hours, minutes] = selectedTime.split(':').map(Number);
+      const endHours = hours + duration;
+      const endTimeStr = `${String(endHours % 24).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+      setSelectedEndTime(endTimeStr);
+    }
+  }, [selectedTime, duration]);
+
+  // Fetch available tables
   const fetchAvailableTables = async () => {
-    if (!selectedDate || !selectedTime) {
-      toast.error("Please select date and time");
+    if (!selectedDate || !selectedTime || !selectedEndTime) {
+      toast.error("Please select date, start time, and duration");
+      return;
+    }
+
+    if (noOfGuests < 1) {
+      toast.error("Please select number of guests");
       return;
     }
 
@@ -88,11 +113,9 @@ const UserTableOrder = () => {
         noOfGuests,
         date: selectedDate,
         startTime: selectedTime,
-        endTime: selectedTime,
+        endTime: selectedEndTime,
       });
 
-      // CORRECTED: Extract the array of available table numbers
-      // Based on API response structure: response.data.data.freeTables = [6,7,8,...,20]
       const availableTableNumbers = response?.data?.data?.freeTables || response?.data?.freeTables || [];
 
       console.log("Available table numbers:", availableTableNumbers);
@@ -157,6 +180,7 @@ const UserTableOrder = () => {
 
   const addToCart = (id: string) => {
     setCart((prev) => ({ ...prev, [id]: (prev[id] || 0) + 1 }));
+    toast.success("Item added to cart");
   };
 
   const updateQty = (id: string, qty: number) => {
@@ -166,6 +190,7 @@ const UserTableOrder = () => {
         delete copy[id];
         return copy;
       });
+      toast.info("Item removed from cart");
     } else {
       setCart((prev) => ({ ...prev, [id]: qty }));
     }
@@ -177,9 +202,10 @@ const UserTableOrder = () => {
       delete copy[id];
       return copy;
     });
+    toast.info("Item removed from cart");
   };
 
-  const handlePlaceOrder = () => {
+  const handlePlaceOrder = async () => {
     const tNum = parseInt(tableNumber, 10);
     if (!tNum || tNum < 1 || tNum > 50) {
       toast.error("Please select a valid table number");
@@ -189,32 +215,73 @@ const UserTableOrder = () => {
       toast.error("Please add items to your order");
       return;
     }
+    if (!selectedDate || !selectedTime || !selectedEndTime) {
+      toast.error("Please select date, start time, and duration");
+      return;
+    }
 
-    addTableOrder({
-      tableNumber: tNum,
-      customerName: user?.name || "Guest",
-      items: cartItems.map((i) => ({
-        id: i.id,
-        name: i.name,
-        price: i.price,
-        qty: i.qty,
-        image: i.image,
-      })),
-      totalPrice,
-      notes: notes.trim(),
-      status: "active",
-    });
+    setIsPlacingOrder(true);
 
-    toast.success(`Table order placed for Table #${tNum}!`);
-    setCart({});
-    setNotes("");
-    setTableNumber("");
-    setShowTableSelector(false);
+    try {
+      // Create the table order with all required fields
+      const newOrder = await addTableOrder({
+        tableNumber: tNum,
+        customerName: user?.name || user?.fullName || "Guest",
+        items: cartItems.map((i) => ({
+          id: i.id,
+          name: i.name,
+          price: i.price,
+          qty: i.qty,
+          image: i.image,
+        })),
+        totalPrice,
+        notes: notes.trim(),
+        status: "active",
+        date: selectedDate,
+        startTime: selectedTime,
+        endTime: selectedEndTime,
+        noOfGuests: noOfGuests,
+      });
+
+      toast.success(`Table order placed for Table #${tNum}! Your reservation is from ${selectedTime} to ${selectedEndTime}`);
+
+      // Reset form
+      setCart({});
+      setNotes("");
+      setTableNumber("");
+      setShowTableSelector(false);
+
+      // Refresh data to get latest orders
+      await refreshData();
+      if (refreshTableOrders) await refreshTableOrders();
+
+    } catch (error) {
+      console.error("Failed to place order:", error);
+      toast.error("Failed to place order. Please try again.");
+    } finally {
+      setIsPlacingOrder(false);
+    }
   };
 
   const myOrders = tableOrders.filter(
     (o) => o.status !== "completed" && o.status !== "cancelled"
   );
+
+  // Get status badge color and text
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case "active":
+        return { color: "bg-green-100 text-green-700", label: "Active" };
+      case "preparing":
+        return { color: "bg-yellow-100 text-yellow-700", label: "Preparing" };
+      case "served":
+        return { color: "bg-blue-100 text-blue-700", label: "Served" };
+      case "pending":
+        return { color: "bg-orange-100 text-orange-700", label: "Pending" };
+      default:
+        return { color: "bg-gray-100 text-gray-700", label: status };
+    }
+  };
 
   return (
     <div>
@@ -328,9 +395,14 @@ const UserTableOrder = () => {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {isLoading ? (
-                  <div className="col-span-full py-10 text-center font-body text-muted-foreground">Loading menu items...</div>
+                  <div className="col-span-full py-10 text-center font-body text-muted-foreground">
+                    <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />
+                    Loading menu items...
+                  </div>
                 ) : filteredMenu.length === 0 ? (
-                  <div className="col-span-full py-10 text-center font-body text-muted-foreground">No menu items found.</div>
+                  <div className="col-span-full py-10 text-center font-body text-muted-foreground">
+                    No menu items found.
+                  </div>
                 ) : filteredMenu.map((item) => {
                   const inCart = cart[item.id] || 0;
                   return (
@@ -407,7 +479,7 @@ const UserTableOrder = () => {
 
               <div className="flex items-center gap-2 p-2.5 bg-muted/50 rounded-lg mb-4">
                 <span className="font-body text-xs text-muted-foreground">Name:</span>
-                <span className="font-body text-sm font-semibold">{user?.name || "Guest"}</span>
+                <span className="font-body text-sm font-semibold">{user?.name || user?.fullName || "Guest"}</span>
               </div>
 
               {/* Availability Check Form */}
@@ -422,7 +494,7 @@ const UserTableOrder = () => {
                       onChange={(e) => setNoOfGuests(Number(e.target.value))}
                       className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                     >
-                      {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
+                      {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].map((num) => (
                         <option key={num} value={num}>{num} {num === 1 ? "Guest" : "Guests"}</option>
                       ))}
                     </select>
@@ -441,7 +513,7 @@ const UserTableOrder = () => {
                   </div>
                   <div>
                     <label className="font-body text-xs text-muted-foreground mb-1 block">
-                      Time *
+                      Start Time *
                     </label>
                     <input
                       type="time"
@@ -450,6 +522,31 @@ const UserTableOrder = () => {
                       className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                     />
                   </div>
+                  <div>
+                    <label className="font-body text-xs text-muted-foreground mb-1 block">
+                      Duration (Hours) *
+                    </label>
+                    <select
+                      value={duration}
+                      onChange={(e) => setDuration(Number(e.target.value))}
+                      className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    >
+                      <option value={1}>1 hour</option>
+                      <option value={2}>2 hours</option>
+                      <option value={3}>3 hours</option>
+                      <option value={4}>4 hours</option>
+                      <option value={5}>5 hours</option>
+                      <option value={6}>6 hours</option>
+                    </select>
+                  </div>
+                  {selectedEndTime && (
+                    <div className="p-2.5 bg-primary/10 rounded-lg">
+                      <p className="font-body text-xs text-primary flex items-center gap-2">
+                        <Clock className="w-3.5 h-3.5" />
+                        End Time: <strong>{selectedEndTime}</strong>
+                      </p>
+                    </div>
+                  )}
                   <Button
                     onClick={fetchAvailableTables}
                     disabled={loadingTables}
@@ -505,9 +602,6 @@ const UserTableOrder = () => {
                           <div className="font-body text-[15px] font-bold text-foreground">
                             Table {table.tableNo}
                           </div>
-                          {/* <div className="font-body text-[10px] text-muted-foreground">
-                            Capacity: {table.capacity}
-                          </div> */}
                           {Number(tableNumber) === table.tableNo && (
                             <CheckCircle className="w-3 h-3 text-primary mx-auto mt-1" />
                           )}
@@ -518,7 +612,7 @@ const UserTableOrder = () => {
                     <div className="text-center p-4 bg-muted/50 rounded-lg">
                       <AlertCircle className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
                       <p className="font-body text-sm text-muted-foreground">
-                        No tables available for the selected time
+                        No tables available for the selected time slot
                       </p>
                       <button
                         onClick={() => {
@@ -533,10 +627,10 @@ const UserTableOrder = () => {
                   )}
 
                   {tableNumber && availableTables.length > 0 && (
-                    <div className="mt-3 p-2.5 bg-yellow-50 border border-green-200 rounded-lg">
-                      <p className="font-body text-xs text-yellow-700 flex items-center gap-2">
+                    <div className="mt-3 p-2.5 bg-green-50 border border-green-200 rounded-lg">
+                      <p className="font-body text-xs text-green-700 flex items-center gap-2">
                         <CheckCircle className="w-3.5 h-3.5" />
-                        Selected Table #{tableNumber}
+                        Selected Table #{tableNumber} from {selectedTime} to {selectedEndTime}
                       </p>
                     </div>
                   )}
@@ -574,7 +668,7 @@ const UserTableOrder = () => {
                   No items added yet
                 </p>
               ) : (
-                <div className="space-y-3">
+                <div className="space-y-3 max-h-80 overflow-y-auto">
                   {cartItems.map((item) => (
                     <div key={item.id} className="flex items-center gap-2">
                       <img
@@ -610,11 +704,20 @@ const UserTableOrder = () => {
 
               <Button
                 onClick={handlePlaceOrder}
-                disabled={cartItems.length === 0 || !tableNumber || !showTableSelector}
+                disabled={cartItems.length === 0 || !tableNumber || !showTableSelector || isPlacingOrder}
                 className="w-full mt-4 bg-primary text-primary-foreground hover:bg-primary/90 font-body font-semibold gap-2"
               >
-                <UtensilsCrossed className="w-4 h-4" />
-                {!tableNumber ? "Select a Table First" : "Place Table Order"}
+                {isPlacingOrder ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Placing Order...
+                  </>
+                ) : (
+                  <>
+                    <UtensilsCrossed className="w-4 h-4" />
+                    {!tableNumber ? "Select a Table First" : "Place Table Order"}
+                  </>
+                )}
               </Button>
 
               {showTableSelector && !tableNumber && availableTables.length > 0 && (
@@ -627,34 +730,37 @@ const UserTableOrder = () => {
             {/* Active Orders */}
             {myOrders.length > 0 && (
               <div className="bg-card border border-border rounded-xl p-5">
-                <h3 className="font-body text-sm font-bold mb-3">Active Table Orders</h3>
-                <div className="space-y-2">
-                  {myOrders.slice(0, 5).map((order) => (
-                    <div
-                      key={order.id}
-                      className="flex items-center justify-between gap-2 p-2.5 bg-muted/50 rounded-lg"
-                    >
-                      <div>
-                        <p className="font-body text-[10px] font-semibold">
-                          Table #{order.tableNumber}
-                        </p>
-                        <p className="font-body text-[10px] text-muted-foreground">
-                          {order.items.length} items · ₹{order.totalPrice}
-                        </p>
-                      </div>
-                      <span
-                        className={`font-body text-[10px] font-semibold px-2 py-1 rounded-full capitalize ${
-                          order.status === "active"
-                            ? "bg-primary/20 text-primary"
-                            : order.status === "preparing"
-                            ? "bg-yellow-100 text-yellow-700"
-                            : "bg-green-100 text-green-700"
-                        }`}
+                <h3 className="font-body text-sm font-bold mb-3 flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-primary" />
+                  Active Table Orders
+                </h3>
+                <div className="space-y-2 max-h-60 overflow-y-auto">
+                  {myOrders.slice(0, 5).map((order) => {
+                    const statusBadge = getStatusBadge(order.status);
+                    return (
+                      <div
+                        key={order.id}
+                        className="flex items-center justify-between gap-2 p-2.5 bg-muted/50 rounded-lg"
                       >
-                        {order.status}
-                      </span>
-                    </div>
-                  ))}
+                        <div className="flex-1 min-w-0">
+                          <p className="font-body text-xs font-semibold">
+                            Table #{order.tableNumber}
+                          </p>
+                          <p className="font-body text-[10px] text-muted-foreground">
+                            {order.items.length} items · ₹{order.totalPrice}
+                          </p>
+                          {order.notes && (
+                            <p className="font-body text-[10px] text-muted-foreground truncate">
+                              {order.notes}
+                            </p>
+                          )}
+                        </div>
+                        <span className={`font-body text-[10px] font-semibold px-2 py-1 rounded-full capitalize ${statusBadge.color}`}>
+                          {statusBadge.label}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -665,4 +771,4 @@ const UserTableOrder = () => {
   );
 };
 
-export default UserTableOrder;
+export default UserTableOrder

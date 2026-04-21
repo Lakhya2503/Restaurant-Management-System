@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { CalendarDays, Clock, Users, LogIn, CheckCircle2, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -128,6 +128,11 @@ const ReservationPage = () => {
   const [availableTables, setAvailableTables] = useState<number[]>([]);
   const [isCheckingTables, setIsCheckingTables] = useState(false);
 
+  // Add a ref to track if a fetch is already in progress
+  const fetchingRef = useRef(false);
+  // Add a ref to store the last fetched params to avoid duplicate fetches
+  const lastFetchParamsRef = useRef<{ date: string; startTime: string; endTime: string; guests: number } | null>(null);
+
   const guestsCount = parseInt(form.guests, 10);
   const tableRange = getTableRangeForGuests(guestsCount);
 
@@ -135,6 +140,7 @@ const ReservationPage = () => {
   const debouncedDate = useDebounce(form.date, 500);
   const debouncedStartTime = useDebounce(form.startTime, 500);
   const debouncedEndTime = useDebounce(form.endTime, 500);
+  const debouncedGuestsCount = useDebounce(guestsCount, 500);
 
   // Prefill form with user data if logged in
   useEffect(() => {
@@ -195,7 +201,12 @@ const ReservationPage = () => {
     return filtered;
   }, [form.startTime, form.date]);
 
-  // Fetch available tables with debouncing
+  // Memoize the validation result to prevent unnecessary re-renders
+  const isValidRange = useMemo(() => {
+    return isValidReservationRange(debouncedStartTime, debouncedEndTime, debouncedDate);
+  }, [debouncedStartTime, debouncedEndTime, debouncedDate]);
+
+  // Fetch available tables with debouncing and prevent duplicate fetches
   useEffect(() => {
     const fetchTables = async () => {
       // Only fetch if all required fields have valid values
@@ -205,11 +216,29 @@ const ReservationPage = () => {
       }
 
       // Validate time range before making API call
-      if (!isValidReservationRange(debouncedStartTime, debouncedEndTime, debouncedDate)) {
+      if (!isValidRange) {
         if (availableTables.length !== 0) setAvailableTables([]);
         return;
       }
 
+      // Check if we're already fetching with the same parameters
+      const currentParams = {
+        date: debouncedDate,
+        startTime: debouncedStartTime,
+        endTime: debouncedEndTime,
+        guests: debouncedGuestsCount
+      };
+
+      if (fetchingRef.current) return;
+
+      // Check if this is the same as last fetch to avoid duplicate calls
+      if (lastFetchParamsRef.current &&
+          JSON.stringify(lastFetchParamsRef.current) === JSON.stringify(currentParams)) {
+        return;
+      }
+
+      lastFetchParamsRef.current = currentParams;
+      fetchingRef.current = true;
       setIsCheckingTables(true);
 
       try {
@@ -217,7 +246,7 @@ const ReservationPage = () => {
           debouncedDate,
           debouncedStartTime,
           debouncedEndTime,
-          guestsCount
+          debouncedGuestsCount
         );
         setAvailableTables(tables);
       } catch (error) {
@@ -226,11 +255,12 @@ const ReservationPage = () => {
         toast.error("Failed to check table availability. Please try again.");
       } finally {
         setIsCheckingTables(false);
+        fetchingRef.current = false;
       }
     };
 
     fetchTables();
-  }, [debouncedDate, debouncedStartTime, debouncedEndTime, guestsCount, getAvailableTables]);
+  }, [debouncedDate, debouncedStartTime, debouncedEndTime, debouncedGuestsCount, isValidRange, getAvailableTables, availableTables.length]);
 
   const hasSlotSelection = Boolean(form.date && form.startTime && form.endTime);
 

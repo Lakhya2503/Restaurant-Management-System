@@ -33,8 +33,9 @@ const orderSchema = new mongoose.Schema(
         type : String,
         default : undefined
       },
-      tableNo : {
-        type : Number,
+      tableId :{
+        type : mongoose.Schema.Types.ObjectId,
+        ref : "Table",
         default : undefined
       },
       orderStatus : {
@@ -75,7 +76,7 @@ orderSchema.index({ createdAt: -1 });
 
 orderSchema.index({ userId: 1, createdAt: -1 });
 
-orderSchema.index({ tableNo: 1 });
+orderSchema.index({ tableId : 1 })
 
 orderSchema.index({ paymentId: 1 });
 

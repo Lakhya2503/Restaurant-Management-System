@@ -1,104 +1,58 @@
 import mongoose from "mongoose";
-import {
-  tableReservationStatus,
-  tableReservationStatusEnums,
-} from "../utils/constants.js";
 
 const reservationSchema = new mongoose.Schema(
   {
-    // USER INFO
     name: {
       type: String,
       required: true,
       trim: true,
     },
-
-    reservationUserId: {
+    userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
       index: true,
     },
-
-    reservationEmail: {
+    userEmail: {
       type: String,
       required: true,
       trim: true,
-      index: true, // ❌ NOT unique (important)
+      index: true,
     },
-
+    tableId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Table",
+      required: true,
+      index: true,
+    },
     phoneNumber: {
       type: String,
       required: true,
       trim: true,
     },
-
-    noOfGuests: {
-      type: Number,
-      required: true,
-    },
-
     specialRequests: {
       type: String,
       default: "",
-    },
-
-    // TABLE INFO
-    tableNo: {
-      type: Number,
-      required: true,
-      index: true,
-    },
-
-    date: {
-      type: Date,
-      required: true,
-      index: true,
-    },
-
-    startTime: {
-      type: String,
-      required: true,
-    },
-
-    endTime: {
-      type: String,
-      required: true,
-    },
-
-    startTimeInMinutes: {
-      type: Number,
-      required: true,
-      index: true,
-    },
-
-    endTimeInMinutes: {
-      type: Number,
-      required: true,
-      index: true,
-    },
-
-    tableReservationStatus: {
-      type: String,
-      enum: tableReservationStatusEnums,
-      default: tableReservationStatus.PENDING,
-      index: true,
     },
   },
   { timestamps: true }
 );
 
-// SAFE INDEXES (NO UNIQUE INDEX ANYWHERE)
-reservationSchema.index({ tableNo: 1, date: 1 });
+// Fixed indexes
+reservationSchema.index({ userId: 1, createdAt: -1 });
+reservationSchema.index({ userEmail: 1 });
+reservationSchema.index({ tableId: 1 });
 
-reservationSchema.index({
-  tableNo: 1,
-  date: 1,
-  startTimeInMinutes: 1,
-  endTimeInMinutes: 1,
+// Virtual for table details
+reservationSchema.virtual('tableDetails', {
+  ref: 'Table',
+  localField: 'tableId',
+  foreignField: '_id',
+  justOne: true
 });
 
-reservationSchema.index({ reservationUserId: 1, date: -1 });
+reservationSchema.set('toJSON', { virtuals: true });
+reservationSchema.set('toObject', { virtuals: true });
 
 const Reservation = mongoose.model("Reservation", reservationSchema);
 

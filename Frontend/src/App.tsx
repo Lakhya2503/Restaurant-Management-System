@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect } from "react";
+import React, { Suspense, lazy, useEffect } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -14,38 +14,38 @@ import CartDrawer from "@/components/CartDrawer";
 import ScrollToTop from "@/components/ScrollToTop";
 import { Loader2 } from "lucide-react";
 
-// Lazy load pages with chunk names for better debugging
-const Index = lazy(() => import(/* webpackChunkName: "home" */ "./pages/Index"));
-const MenuPage = lazy(() => import(/* webpackChunkName: "menu" */ "./pages/MenuPage"));
-const DishDetailPage = lazy(() => import(/* webpackChunkName: "dish" */ "./pages/DishDetailPage"));
-const ReservationPage = lazy(() => import(/* webpackChunkName: "reservation" */ "./pages/ReservationPage"));
-const CheckoutPage = lazy(() => import(/* webpackChunkName: "checkout" */ "./pages/CheckoutPage"));
-const AboutPage = lazy(() => import(/* webpackChunkName: "about" */ "./pages/AboutPage"));
-const ContactPage = lazy(() => import(/* webpackChunkName: "contact" */ "./pages/ContactPage"));
-const GalleryPage = lazy(() => import(/* webpackChunkName: "gallery" */ "./pages/GalleryPage"));
-const LoginPage = lazy(() => import(/* webpackChunkName: "login" */ "./pages/LoginPage"));
-const SignupPage = lazy(() => import(/* webpackChunkName: "signup" */ "./pages/SignupPage"));
-const TermsPage = lazy(() => import(/* webpackChunkName: "terms" */ "./pages/TermsPage"));
-const PrivacyPage = lazy(() => import(/* webpackChunkName: "privacy" */ "./pages/PrivacyPage"));
-const TrendingPage = lazy(() => import(/* webpackChunkName: "trending" */ "./pages/TrendingPage"));
-const NotFound = lazy(() => import(/* webpackChunkName: "404" */ "./pages/NotFound"));
+// Lazy load page components for better performance
+const Index = lazy(() => import("./pages/Index"));
+const MenuPage = lazy(() => import("./pages/MenuPage"));
+const DishDetailPage = lazy(() => import("./pages/DishDetailPage"));
+const ReservationPage = lazy(() => import("./pages/ReservationPage"));
+const CheckoutPage = lazy(() => import("./pages/CheckoutPage"));
+const AboutPage = lazy(() => import("./pages/AboutPage"));
+const ContactPage = lazy(() => import("./pages/ContactPage"));
+const GalleryPage = lazy(() => import("./pages/GalleryPage"));
+const LoginPage = lazy(() => import("./pages/LoginPage"));
+const SignupPage = lazy(() => import("./pages/SignupPage"));
+const TermsPage = lazy(() => import("./pages/TermsPage"));
+const PrivacyPage = lazy(() => import("./pages/PrivacyPage"));
+const TrendingPage = lazy(() => import("./pages/TrendingPage"));
+const NotFound = lazy(() => import("./pages/NotFound"));
 
-// Admin pages
-const AdminLayout = lazy(() => import(/* webpackChunkName: "admin-layout" */ "./pages/admin/AdminLayout"));
-const AdminOverview = lazy(() => import(/* webpackChunkName: "admin-overview" */ "./pages/admin/AdminOverview"));
-const AdminOrders = lazy(() => import(/* webpackChunkName: "admin-orders" */ "./pages/admin/AdminOrders"));
-const AdminReservations = lazy(() => import(/* webpackChunkName: "admin-reservations" */ "./pages/admin/AdminReservations"));
-const AdminMenu = lazy(() => import(/* webpackChunkName: "admin-menu" */ "./pages/admin/AdminMenu"));
-const AdminUsers = lazy(() => import(/* webpackChunkName: "admin-users" */ "./pages/admin/AdminUsers"));
-const AdminAnalytics = lazy(() => import(/* webpackChunkName: "admin-analytics" */ "./pages/admin/AdminAnalytics"));
-const AdminTableOrders = lazy(() => import(/* webpackChunkName: "admin-table-orders" */ "./pages/admin/AdminTableOrders"));
+// Admin pages lazy loading
+const AdminLayout = lazy(() => import("./pages/admin/AdminLayout"));
+const AdminOverview = lazy(() => import("./pages/admin/AdminOverview"));
+const AdminOrders = lazy(() => import("./pages/admin/AdminOrders"));
+const AdminReservations = lazy(() => import("./pages/admin/AdminReservations"));
+const AdminMenu = lazy(() => import("./pages/admin/AdminMenu"));
+const AdminUsers = lazy(() => import("./pages/admin/AdminUsers"));
+const AdminAnalytics = lazy(() => import("./pages/admin/AdminAnalytics"));
+const AdminTableOrders = lazy(() => import("./pages/admin/AdminTableOrders"));
 
-// User pages
-const UserLayout = lazy(() => import(/* webpackChunkName: "user-layout" */ "./pages/user/UserLayout"));
-const UserProfile = lazy(() => import(/* webpackChunkName: "user-profile" */ "./pages/user/UserProfile"));
-const UserOrders = lazy(() => import(/* webpackChunkName: "user-orders" */ "./pages/user/UserOrders"));
-const UserReservations = lazy(() => import(/* webpackChunkName: "user-reservations" */ "./pages/user/UserReservations"));
-const UserTableOrder = lazy(() => import(/* webpackChunkName: "user-table-order" */ "./pages/user/UserTableOrder"));
+// User pages lazy loading
+const UserLayout = lazy(() => import("./pages/user/UserLayout"));
+const UserProfile = lazy(() => import("./pages/user/UserProfile"));
+const UserOrders = lazy(() => import("./pages/user/UserOrders"));
+const UserReservations = lazy(() => import("./pages/user/UserReservations"));
+const UserTableOrder = lazy(() => import("./pages/user/UserTableOrder"));
 
 // Create QueryClient with optimizations
 const queryClient = new QueryClient({
@@ -64,6 +64,21 @@ const LoadingSpinner = ({ text = "Loading..." }: { text?: string }) => (
     <div className="text-center">
       <Loader2 className="h-12 w-12 animate-spin text-primary mx-auto mb-4" />
       <p className="text-muted-foreground">{text}</p>
+    </div>
+  </div>
+);
+
+// Skeleton loader for better UX
+const PageSkeleton = () => (
+  <div className="min-h-screen animate-pulse">
+    <div className="h-64 bg-gray-200 dark:bg-gray-800 rounded-b-xl" />
+    <div className="container mx-auto px-4 py-8">
+      <div className="h-8 bg-gray-200 dark:bg-gray-800 rounded w-1/3 mb-6" />
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {[...Array(6)].map((_, i) => (
+          <div key={i} className="h-64 bg-gray-200 dark:bg-gray-800 rounded-lg" />
+        ))}
+      </div>
     </div>
   </div>
 );
@@ -137,15 +152,26 @@ const AdminRoute = ({ children }: { children: React.ReactNode }) => {
 // Preload component for critical routes
 const RoutePreloader = () => {
   useEffect(() => {
-    // Preload menu page when idle
+    // Preload menu page and home page when idle
     if ("requestIdleCallback" in window) {
       requestIdleCallback(() => {
         import("./pages/MenuPage");
+        import("./pages/Index");
       });
     } else {
       setTimeout(() => {
         import("./pages/MenuPage");
+        import("./pages/Index");
       }, 2000);
+    }
+
+    // Preload user dashboard if user is logged in
+    const token = sessionStorage.getItem("accessToken");
+    if (token) {
+      setTimeout(() => {
+        import("./pages/user/UserLayout");
+        import("./pages/user/UserProfile");
+      }, 3000);
     }
   }, []);
 
@@ -162,7 +188,7 @@ const AppContent = () => {
       <CartDrawer />
 
       <LazyErrorBoundary>
-        <Suspense fallback={<LoadingSpinner text="Loading page..." />}>
+        <Suspense fallback={<PageSkeleton />}>
           <Routes>
             {/* Public Routes */}
             <Route path="/" element={<Index />} />

@@ -51,83 +51,71 @@ const UserOrders = () => {
   const [editItems, setEditItems] = useState<TableOrderItem[]>([]);
   const [activeTab, setActiveTab] = useState<"online" | "table">("online");
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [forceUpdate, setForceUpdate] = useState(0);
 
-  // Function to refresh all order data
+  // Use refs to track if we've loaded data and to prevent unnecessary updates
+  const hasLoadedRef = useRef(false);
+  const prevTableOrdersRef = useRef<TableOrder[]>([]);
+  const prevUserOrdersRef = useRef<Order[]>([]);
+
+  // Separate function to get online orders
+  const getOnlineOrders = useCallback(() => {
+    if (!user) return [];
+    const allOrders = getUserOrders(user.id);
+    return allOrders.filter(o =>
+      String(o.orderType || "Home Delivery").toLowerCase() === "home delivery"
+    );
+  }, [user, getUserOrders]);
+
+  // Separate function to get table orders
+  const getTableOrders = useCallback(() => {
+    if (!user) return [];
+    return tableOrders.filter((o) => o.customerName === user.name);
+  }, [user, tableOrders]);
+
+  // Function to refresh all order data - only called manually or on specific events
   const refreshAllOrders = useCallback(() => {
     if (!user) return;
 
     setIsRefreshing(true);
 
-    // Get fresh data from contexts
-    const allOrders = getUserOrders(user.id);
-    const onlineOnly = allOrders.filter(o =>
-      String(o.orderType || "Home Delivery").toLowerCase() === "home delivery"
-    );
-    setOrders(onlineOnly);
+    // Get fresh data
+    const newOnlineOrders = getOnlineOrders();
+    const newTableOrders = getTableOrders();
 
-    setUserTableOrders(
-      tableOrders.filter((o) => o.customerName === user.name)
-    );
+    setOrders(newOnlineOrders);
+    setUserTableOrders(newTableOrders);
 
     setIsRefreshing(false);
-  }, [user, getUserOrders, tableOrders]);
+  }, [user, getOnlineOrders, getTableOrders]);
 
-  // Auto-refresh when page becomes visible (user returns to tab)
+  console.log("UserTableOrders", userTableOrders)
+
+  userTableOrders.map((item)=>{
+        console.log(item)
+  })
+
+  // Initial load only - runs once
   useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        console.log("Page became visible, refreshing orders...");
-        refreshAllOrders();
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [refreshAllOrders]);
-
-  // Refresh when component mounts (every time page loads)
-  useEffect(() => {
-    refreshAllOrders();
-  }, [refreshAllOrders]);
-
-  // Listen for navigation events (when user comes back from other pages)
-  useEffect(() => {
-    const handlePopState = () => {
-      console.log("Popstate detected, refreshing orders...");
+    if (user && !hasLoadedRef.current) {
       refreshAllOrders();
-    };
+      hasLoadedRef.current = true;
+    }
+  }, [user, refreshAllOrders]);
 
-    window.addEventListener('popstate', handlePopState);
-
-    return () => {
-      window.removeEventListener('popstate', handlePopState);
-    };
-  }, [refreshAllOrders]);
-
-  // Listen for storage events and custom events
+  // Listen only for specific events that require refresh (user actions)
   useEffect(() => {
-    const handleStorageChange = () => {
-      console.log("Storage change detected, refreshing orders...");
-      refreshAllOrders();
-    };
-
     const handleOrderUpdate = () => {
-      console.log("Order update event detected, refreshing orders...");
+      console.log("Order update event, refreshing...");
       refreshAllOrders();
     };
 
-    window.addEventListener("storage", handleStorageChange);
+    // Only essential events
     window.addEventListener("ordersUpdated", handleOrderUpdate);
     window.addEventListener("tableOrdersUpdated", handleOrderUpdate);
     window.addEventListener("checkoutComplete", handleOrderUpdate);
     window.addEventListener("orderPlaced", handleOrderUpdate);
 
     return () => {
-      window.removeEventListener("storage", handleStorageChange);
       window.removeEventListener("ordersUpdated", handleOrderUpdate);
       window.removeEventListener("tableOrdersUpdated", handleOrderUpdate);
       window.removeEventListener("checkoutComplete", handleOrderUpdate);
@@ -135,34 +123,31 @@ const UserOrders = () => {
     };
   }, [refreshAllOrders]);
 
-  // Update when dependencies change
-  useEffect(() => {
-    if (user) {
-      refreshAllOrders();
-    }
-  }, [user, tableOrders, forceUpdate, refreshAllOrders]);
-
   const canCancelOrder = (order: Order) => {
     return order.status === "pending" || order.status === "preparing";
   };
 
   const handleCancelOrder = (orderId: string) => {
     updateOrderStatus(orderId, "cancelled");
-    refreshAllOrders();
+    // Manually update local state to avoid re-fetch
+    setOrders(prevOrders =>
+      prevOrders.map(order =>
+        order.id === orderId
+          ? { ...order, status: "cancelled" }
+          : order
+      )
+    );
     toast.success("Order cancelled successfully");
     setCancelOrderId(null);
-
-    // Dispatch event to notify other components
     window.dispatchEvent(new Event("ordersUpdated"));
   };
 
   const handleDeleteTableOrder = (orderId: string) => {
     deleteTableOrder(orderId);
-    refreshAllOrders();
+    // Manually update local state
+    setUserTableOrders(prev => prev.filter(order => order.id !== orderId));
     toast.success("Table order deleted successfully");
     setDeleteOrderId(null);
-
-    // Dispatch event to notify other components
     window.dispatchEvent(new Event("tableOrdersUpdated"));
   };
 
@@ -201,17 +186,33 @@ const UserOrders = () => {
       totalPrice,
     });
 
-    refreshAllOrders();
+    // Update local state manually
+    setUserTableOrders(prev =>
+      prev.map(order =>
+        order.id === editOrder.id
+          ? {
+              ...order,
+              tableNumber: editTableNumber,
+              notes: editNotes,
+              items: editItems,
+              totalPrice,
+            }
+          : order
+      )
+    );
+
     toast.success("Table order updated successfully");
     setEditOrder(null);
-
-    // Dispatch event to notify other components
     window.dispatchEvent(new Event("tableOrdersUpdated"));
+  };
+
+  const handleManualRefresh = () => {
+    refreshAllOrders();
   };
 
   const totalCount = orders.length + userTableOrders.length;
 
-  if (totalCount === 0) {
+  if (totalCount === 0 && hasLoadedRef.current) {
     return (
       <div className="text-center py-12">
         <Package className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
@@ -236,7 +237,7 @@ const UserOrders = () => {
         <Button
           variant="outline"
           size="sm"
-          onClick={refreshAllOrders}
+          onClick={handleManualRefresh}
           disabled={isRefreshing}
           className="gap-2"
         >
@@ -273,10 +274,11 @@ const UserOrders = () => {
           ) : (
             orders.map((order) => (
               <div key={order.id} className="bg-card border border-border rounded-xl p-5">
+
                 <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-4">
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-2">
-                      <h3 className="font-body text-lg font-bold">{order.id}</h3>
+                      <h3 className="font-body text-lg font-bold">ONLINE{String(order.id).slice(14).toUpperCase()}</h3>
                       <span className={`font-body text-xs px-2.5 py-1 rounded-full capitalize ${statusColor[order.status]}`}>
                         {order.status}
                       </span>
@@ -356,7 +358,7 @@ const UserOrders = () => {
                 <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-4">
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-2">
-                      <h3 className="font-body text-lg font-bold">{order.id}</h3>
+                      <h3 className="font-body text-lg font-bold">TABLE{String(order.id).slice(14).toUpperCase()}</h3>
                       <span className="font-body text-xs px-2.5 py-1 rounded-full bg-accent text-accent-foreground">
                         Table {order.tableNumber}
                       </span>

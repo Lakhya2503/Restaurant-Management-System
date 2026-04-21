@@ -56,6 +56,7 @@ export const getTableRange = (guests) => {
 export const getPossibleTables = (range) =>
   Array.from({ length: range.end - range.start + 1 }, (_, i) => range.start + i);
 
+
 // reusable conflict query
 export const buildConflictQuery = (tableNo, parsedDate, startMin, endMin) => ({
   tableNo,
@@ -64,3 +65,23 @@ export const buildConflictQuery = (tableNo, parsedDate, startMin, endMin) => ({
   startTimeInMinutes: { $lt: endMin },
   endTimeInMinutes: { $gt: startMin },
 });
+
+export const DEFAULT_DURATION = 120; // 2 hours
+
+export const getTimeRange = (startTime, endTime) => {
+  const startMin = toMinutes(startTime);
+
+  const endMin = endTime
+    ? toMinutes(endTime)
+    : startMin + DEFAULT_DURATION;
+
+  if (startMin >= endMin) {
+    throw new ApiError(400, "Invalid time range");
+  }
+
+  return { startMin, endMin };
+};
+
+export const isTimeOverlapping = (aStart, aEnd, bStart, bEnd) => {
+  return aStart < bEnd && aEnd > bStart;
+};

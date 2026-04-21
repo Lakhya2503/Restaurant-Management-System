@@ -127,7 +127,11 @@ export const orderApi = {
   createTableOrder: (payload: {
     tableNo: string;
     specialNotes?: string;
-    items: { itemId: string; quantity: number }[];
+    items: { itemId: string; quantity: number }[],
+    date : string,
+    startTime : string,
+    endTime : string,
+    noOfGuest : number
   }) => api.post("/order/add/table-order", payload),
 
   getUserOrders: () => api.get("/order/order-users"),

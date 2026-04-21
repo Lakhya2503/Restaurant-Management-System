@@ -8,9 +8,10 @@ import {
   CheckCircle2, CreditCard, FileText, IndianRupee, LogIn,
   MapPin, Minus, Phone, Plus, ShieldCheck, ShoppingBag,
   Sparkles, Trash2, Truck, User, UtensilsCrossed, Wallet,
-  X, AlertCircle, Loader2, Hash, RefreshCw
+  X, AlertCircle, Loader2, Hash, RefreshCw, Calendar, Users,
+  Clock
 } from "lucide-react";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -31,7 +32,7 @@ interface AvailableTable {
   isAvailable: boolean;
 }
 
-// Table capacity mapping (adjust based on your restaurant layout)
+// Table capacity mapping
 const TABLE_CAPACITIES: Record<number, number> = {
   1: 2, 2: 2, 3: 4, 4: 4, 5: 4,
   6: 4, 7: 4, 8: 4, 9: 4, 10: 4,
@@ -43,18 +44,30 @@ const TABLE_CAPACITIES: Record<number, number> = {
 const CheckoutPage = () => {
   const { items, totalPrice, clearCart, updateQty, removeItem, refreshCart } = useCart();
   const { user, isLoggedIn, refreshUser } = useAuth();
-  const { addOrder, getUserReservations, refreshOrders } = useOrders();
+  const { addOrder, refreshOrders } = useOrders();
   const { addTableOrder } = useTableOrders();
   const navigate = useNavigate();
   const location = useLocation();
 
-  const [form, setForm] = useState({ name: "", phone: "", address: "", payment: "razorpay", selectedAddressId: "" });
+  const [form, setForm] = useState({
+    name: "",
+    phone: "",
+    address: "",
+    payment: "razorpay",
+    selectedAddressId: ""
+  });
   const [loading, setLoading] = useState(false);
   const [orderType, setOrderType] = useState<"delivery" | "dine-in">("delivery");
   const [tableNumber, setTableNumber] = useState<number>(0);
   const [tableNotes, setTableNotes] = useState("");
-  const [successPopup, setSuccessPopup] = useState<{ show: boolean; orderId: string; type: string }>({ show: false, orderId: "", type: "" });
+  const [successPopup, setSuccessPopup] = useState<{ show: boolean; orderId: string; type: string }>({
+    show: false,
+    orderId: "",
+    type: ""
+  });
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const hasRefreshedOnMount = useRef(false);
+  const hasInitialized = useRef(false);
 
   // Table availability states
   const [availableTables, setAvailableTables] = useState<AvailableTable[]>([]);
@@ -63,6 +76,8 @@ const CheckoutPage = () => {
   const [noOfGuests, setNoOfGuests] = useState(2);
   const [selectedDate, setSelectedDate] = useState("");
   const [selectedTime, setSelectedTime] = useState("");
+  const [selectedEndTime, setSelectedEndTime] = useState("");
+  const [duration, setDuration] = useState(2); // hours
 
   // Function to refresh all data
   const refreshAllData = useCallback(async () => {
@@ -83,28 +98,27 @@ const CheckoutPage = () => {
     }
   }, [refreshCart, refreshUser, refreshOrders, isRefreshing]);
 
-  // Auto-refresh when page becomes visible (user returns to tab)
+  // Auto-refresh when page becomes visible
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        console.log("Page became visible, refreshing data...");
         refreshAllData();
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
-
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [refreshAllData]);
 
-  // Refresh when navigating back to checkout from other pages
+  // Refresh when navigating back to checkout
   useEffect(() => {
+    if (hasRefreshedOnMount.current) return;
+
     const navigationEntries = performance.getEntriesByType('navigation');
     const isReload = navigationEntries.length > 0 && (navigationEntries[0] as PerformanceNavigationTiming).type === 'reload';
 
-    // Check if coming from profile, menu, or cart pages
     const fromPage = location.state?.from;
     const shouldRefresh = fromPage === '/profile' ||
                          fromPage === '/menu' ||
@@ -113,26 +127,44 @@ const CheckoutPage = () => {
                          isReload;
 
     if (shouldRefresh) {
-      console.log("Navigated from:", fromPage, "refreshing data...");
       refreshAllData();
-
-      // Clear the state to prevent multiple refreshes
+      hasRefreshedOnMount.current = true;
       navigate('/checkout', { replace: true, state: {} });
     }
   }, [location.state, navigate, refreshAllData]);
 
   // Set default date and time
   useEffect(() => {
-    const today = new Date();
-    const formattedDate = today.toISOString().split('T')[0];
-    const currentTime = today.toTimeString().slice(0, 5);
-    setSelectedDate(formattedDate);
-    setSelectedTime(currentTime);
+    if (!hasInitialized.current) {
+      const today = new Date();
+      const formattedDate = today.toISOString().split('T')[0];
+      const currentTime = today.toTimeString().slice(0, 5);
+      setSelectedDate(formattedDate);
+      setSelectedTime(currentTime);
+
+      // Set default end time (2 hours later)
+      const [hours, minutes] = currentTime.split(':').map(Number);
+      const endHours = hours + 2;
+      const endTimeStr = `${String(endHours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+      setSelectedEndTime(endTimeStr);
+
+      hasInitialized.current = true;
+    }
   }, []);
 
-  // Prefill form with user data if logged in
+  // Update end time when start time or duration changes
   useEffect(() => {
-    if (user) {
+    if (selectedTime) {
+      const [hours, minutes] = selectedTime.split(':').map(Number);
+      const endHours = hours + duration;
+      const endTimeStr = `${String(endHours % 24).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+      setSelectedEndTime(endTimeStr);
+    }
+  }, [selectedTime, duration]);
+
+  // Prefill form with user data
+  useEffect(() => {
+    if (user && !hasInitialized.current) {
       const primaryAddress = user.addresses?.find((a) => a.isDefault);
       setForm((prev) => ({
         ...prev,
@@ -144,9 +176,11 @@ const CheckoutPage = () => {
     }
   }, [user]);
 
-  const update = (field: string, value: string) => setForm((p) => ({ ...p, [field]: value }));
+  const update = useCallback((field: string, value: string) => {
+    setForm((p) => ({ ...p, [field]: value }));
+  }, []);
 
-  const handleAddressSelect = (addressId: string) => {
+  const handleAddressSelect = useCallback((addressId: string) => {
     const selectedAddr = user?.addresses?.find((a) => a._id === addressId);
     if (selectedAddr) {
       setForm((prev) => ({
@@ -155,11 +189,11 @@ const CheckoutPage = () => {
         selectedAddressId: addressId,
       }));
     }
-  };
+  }, [user?.addresses]);
 
   // Fetch available tables for dine-in
-  const fetchAvailableTables = async () => {
-    if (!selectedDate || !selectedTime) {
+  const fetchAvailableTables = useCallback(async () => {
+    if (!selectedDate || !selectedTime || !selectedEndTime) {
       toast.error("Please select date and time");
       return;
     }
@@ -170,12 +204,10 @@ const CheckoutPage = () => {
         noOfGuests,
         date: selectedDate,
         startTime: selectedTime,
-        endTime: selectedTime,
+        endTime: selectedEndTime,
       });
 
       const availableTableNumbers = response?.data?.data?.freeTables || response?.data?.freeTables || [];
-
-      console.log("Available table numbers:", availableTableNumbers);
 
       if (Array.isArray(availableTableNumbers) && availableTableNumbers.length > 0) {
         const tables: AvailableTable[] = availableTableNumbers.map((tableNo) => ({
@@ -199,18 +231,23 @@ const CheckoutPage = () => {
     } finally {
       setLoadingTables(false);
     }
-  };
+  }, [selectedDate, selectedTime, selectedEndTime, noOfGuests]);
 
-  const showSuccessAndRedirect = (orderId: string, type: string) => {
+  const showSuccessAndRedirect = useCallback((orderId: string, type: string) => {
     setSuccessPopup({ show: true, orderId, type });
     clearCart();
+
+    // Dispatch events
+    window.dispatchEvent(new Event("orderPlaced"));
+    window.dispatchEvent(new Event("checkoutComplete"));
+
     setTimeout(() => {
       setSuccessPopup({ show: false, orderId: "", type: "" });
       navigate("/profile/orders");
     }, 3000);
-  };
+  }, [clearCart, navigate]);
 
-  const handleOrder = async (e: React.FormEvent) => {
+  const handleOrder = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (orderType === "dine-in") {
@@ -222,26 +259,51 @@ const CheckoutPage = () => {
         toast.error("Please login to place order");
         return;
       }
+      if (!selectedDate || !selectedTime || !selectedEndTime) {
+        toast.error("Please select date and time");
+        return;
+      }
+      if (noOfGuests < 1) {
+        toast.error("Please specify number of guests");
+        return;
+      }
+
       setLoading(true);
-      const newOrder = await addTableOrder({
-        tableNumber,
-        customerName: user.name || form.name,
-        items: items.map(item => ({
-          id: item.id,
-          name: item.name,
-          price: item.price,
-          qty: item.qty,
-          image: item.image,
-        })),
-        totalPrice,
-        notes: tableNotes,
-        status: "active",
-      });
-      setLoading(false);
-      showSuccessAndRedirect(newOrder.id, "dine-in");
+      try {
+        // Prepare the complete table order data
+        const tableOrderData = {
+          tableNumber: tableNumber,
+          customerName: user.name || form.name,
+          items: items.map(item => ({
+            id: item.id,
+            name: item.name,
+            price: item.price,
+            qty: item.qty,
+            image: item.image,
+          })),
+          totalPrice: totalPrice,
+          notes: tableNotes,
+          date: selectedDate,
+          startTime: selectedTime,
+          endTime: selectedEndTime,
+          noOfGuests: noOfGuests,
+        };
+
+        console.log("Placing table order with data:", tableOrderData);
+
+        const newOrder = await addTableOrder(tableOrderData);
+
+        setLoading(false);
+        showSuccessAndRedirect(newOrder.id, "dine-in");
+      } catch (error) {
+        console.error("Error placing table order:", error);
+        toast.error("Failed to place order. Please try again.");
+        setLoading(false);
+      }
       return;
     }
 
+    // Delivery order
     if (!form.name || !form.phone || !form.address) {
       toast.error("Please fill all required fields");
       return;
@@ -323,14 +385,21 @@ const CheckoutPage = () => {
       toast.error(`Error: ${msg}`);
       setLoading(false);
     }
-  };
+  }, [orderType, tableNumber, user, form, items, totalPrice, tableNotes,
+      selectedDate, selectedTime, selectedEndTime, noOfGuests, addTableOrder,
+      addOrder, showSuccessAndRedirect, navigate]);
 
-  // Manual refresh button handler
-  const handleManualRefresh = async () => {
+  const handleManualRefresh = useCallback(async () => {
     toast.info("Refreshing your data...");
     await refreshAllData();
     toast.success("Data refreshed successfully!");
-  };
+  }, [refreshAllData]);
+
+  const handleOrderTypeChange = useCallback((type: "delivery" | "dine-in") => {
+    setOrderType(type);
+    setShowTableSelector(false);
+    setTableNumber(0);
+  }, []);
 
   if (items.length === 0 && !successPopup.show) {
     return (
@@ -423,7 +492,6 @@ const CheckoutPage = () => {
               </div>
             </div>
 
-            {/* Manual Refresh Button */}
             <Button
               variant="ghost"
               size="sm"
@@ -459,11 +527,7 @@ const CheckoutPage = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <button
                     type="button"
-                    onClick={() => {
-                      setOrderType("delivery");
-                      setShowTableSelector(false);
-                      setTableNumber(0);
-                    }}
+                    onClick={() => handleOrderTypeChange("delivery")}
                     className={`flex items-center gap-4 p-5 border-2 rounded-xl transition-all text-left ${
                       orderType === "delivery" ? "border-primary bg-primary/5 shadow-sm" : "border-border hover:border-primary/40"
                     }`}
@@ -478,7 +542,7 @@ const CheckoutPage = () => {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setOrderType("dine-in")}
+                    onClick={() => handleOrderTypeChange("dine-in")}
                     className={`flex items-center gap-4 p-5 border-2 rounded-xl transition-all text-left ${
                       orderType === "dine-in" ? "border-primary bg-primary/5 shadow-sm" : "border-border hover:border-primary/40"
                     }`}
@@ -577,17 +641,35 @@ const CheckoutPage = () => {
                               onChange={(e) => setSelectedDate(e.target.value)}
                               min={new Date().toISOString().split('T')[0]}
                               className="w-full px-4 py-3 rounded-xl border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                              required
                             />
                           </div>
                           <div>
-                            <label className="font-body text-sm font-medium mb-2 block">Time *</label>
+                            <label className="font-body text-sm font-medium mb-2 block">Start Time *</label>
                             <input
                               type="time"
                               value={selectedTime}
                               onChange={(e) => setSelectedTime(e.target.value)}
                               className="w-full px-4 py-3 rounded-xl border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                              required
                             />
                           </div>
+                        </div>
+                        <div>
+                          <label className="font-body text-sm font-medium mb-2 block">Duration *</label>
+                          <select
+                            value={duration}
+                            onChange={(e) => setDuration(Number(e.target.value))}
+                            className="w-full px-4 py-3 rounded-xl border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                          >
+                            <option value={1}>1 hour</option>
+                            <option value={2}>2 hours</option>
+                            <option value={3}>3 hours</option>
+                            <option value={4}>4 hours</option>
+                          </select>
+                          <p className="font-body text-xs text-muted-foreground mt-1">
+                            End time: {selectedEndTime}
+                          </p>
                         </div>
                         <Button
                           type="button"
@@ -696,11 +778,29 @@ const CheckoutPage = () => {
                     </div>
 
                     {tableNumber > 0 && (
-                      <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl">
+                      <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl space-y-2 mt-4">
                         <p className="font-body text-xs text-orange-700 flex items-center gap-2">
                           <UtensilsCrossed className="w-4 h-4" />
-                          <span>Your order will be served directly to <strong>Table {tableNumber}</strong>. No delivery charge for dine-in orders.</span>
+                          <span>Your order will be served directly to <strong>Table {tableNumber}</strong></span>
                         </p>
+                        <p className="font-body text-xs text-orange-700 flex items-center gap-2">
+                          <Calendar className="w-4 h-4" />
+                          <span><strong>{selectedDate}</strong> at <strong>{selectedTime}</strong></span>
+                        </p>
+                        <p className="font-body text-xs text-orange-700 flex items-center gap-2">
+                          <Clock className="w-4 h-4" />
+                          <span>Duration: <strong>{duration} hour{duration > 1 ? 's' : ''}</strong> (until {selectedEndTime})</span>
+                        </p>
+                        <p className="font-body text-xs text-orange-700 flex items-center gap-2">
+                          <Users className="w-4 h-4" />
+                          <span><strong>{noOfGuests}</strong> {noOfGuests === 1 ? "Guest" : "Guests"}</span>
+                        </p>
+                        {tableNotes && (
+                          <p className="font-body text-xs text-orange-700 flex items-start gap-2">
+                            <span className="font-medium">Notes:</span>
+                            <span>{tableNotes}</span>
+                          </p>
+                        )}
                       </div>
                     )}
                   </div>
@@ -718,11 +818,24 @@ const CheckoutPage = () => {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="relative">
                         <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                        <input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder="Full Name *" className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all" required />
+                        <input
+                          value={form.name}
+                          onChange={(e) => update("name", e.target.value)}
+                          placeholder="Full Name *"
+                          className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+                          required
+                        />
                       </div>
                       <div className="relative">
                         <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                        <input value={form.phone} onChange={(e) => update("phone", e.target.value)} placeholder="Phone Number *" type="tel" className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all" required />
+                        <input
+                          value={form.phone}
+                          onChange={(e) => update("phone", e.target.value)}
+                          placeholder="Phone Number *"
+                          type="tel"
+                          className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+                          required
+                        />
                       </div>
                     </div>
 
@@ -770,7 +883,17 @@ const CheckoutPage = () => {
 
                     <div className="relative mt-4">
                       <MapPin className="absolute left-3 top-3.5 w-4 h-4 text-muted-foreground" />
-                      <textarea value={form.address} onChange={(e) => { update("address", e.target.value); setForm((p) => ({ ...p, selectedAddressId: "" })); }} placeholder="Delivery Address *" rows={3} className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all resize-none" required />
+                      <textarea
+                        value={form.address}
+                        onChange={(e) => {
+                          update("address", e.target.value);
+                          setForm((p) => ({ ...p, selectedAddressId: "" }));
+                        }}
+                        placeholder="Delivery Address *"
+                        rows={3}
+                        className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background font-body text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all resize-none"
+                        required
+                      />
                     </div>
                   </div>
                 )}
@@ -788,7 +911,14 @@ const CheckoutPage = () => {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       {/* Cash on Delivery */}
                       <label className={`flex flex-col items-center text-center p-5 border-2 rounded-2xl cursor-pointer transition-all ${form.payment === "cod" ? "border-primary bg-primary/5 shadow-sm" : "border-border hover:border-primary/40"}`}>
-                        <input type="radio" name="payment" value="cod" checked={form.payment === "cod"} onChange={(e) => update("payment", e.target.value)} className="sr-only" />
+                        <input
+                          type="radio"
+                          name="payment"
+                          value="cod"
+                          checked={form.payment === "cod"}
+                          onChange={(e) => update("payment", e.target.value)}
+                          className="sr-only"
+                        />
                         <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center mb-3">
                           <Wallet className="w-6 h-6 text-green-600" />
                         </div>
@@ -798,7 +928,14 @@ const CheckoutPage = () => {
 
                       {/* Online Payment (Razorpay) */}
                       <label className={`flex flex-col items-center text-center p-5 border-2 rounded-2xl cursor-pointer transition-all ${form.payment === "razorpay" ? "border-primary bg-primary/5 shadow-sm" : "border-border hover:border-primary/40"}`}>
-                        <input type="radio" name="payment" value="razorpay" checked={form.payment === "razorpay"} onChange={(e) => update("payment", e.target.value)} className="sr-only" />
+                        <input
+                          type="radio"
+                          name="payment"
+                          value="razorpay"
+                          checked={form.payment === "razorpay"}
+                          onChange={(e) => update("payment", e.target.value)}
+                          className="sr-only"
+                        />
                         <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center mb-3">
                           <CreditCard className="w-6 h-6 text-blue-600" />
                         </div>
@@ -915,7 +1052,10 @@ const CheckoutPage = () => {
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in-up">
           <div className="relative bg-card border border-border rounded-3xl p-8 max-w-sm w-full mx-4 text-center shadow-2xl">
             <button
-              onClick={() => { setSuccessPopup({ show: false, orderId: "", type: "" }); navigate("/profile/orders"); }}
+              onClick={() => {
+                setSuccessPopup({ show: false, orderId: "", type: "" });
+                navigate("/profile/orders");
+              }}
               className="absolute top-4 right-4 text-muted-foreground hover:text-foreground transition-colors"
             >
               <X className="w-5 h-5" />

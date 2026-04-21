@@ -48,6 +48,7 @@ export interface Reservation {
   status: "pending" | "confirmed" | "cancelled" | "completed";
   assignedTable?: number;
   createdAt: string;
+  tableDetails?: any;
 }
 
 interface TableRange {
@@ -60,13 +61,14 @@ interface OrderContextType {
   reservations: Reservation[];
   addOrder: (orderData: Omit<Order, "id" | "createdAt">) => Promise<{ order: Order; payment: any }>;
   addReservation: (reservation: Omit<Reservation, "id" | "createdAt" | "assignedTable">, tableId?: number) => Promise<Reservation>;
-  updateOrderStatus: (orderId: string, status: Order["status"], cancellationReason?: string) => void;
-  updateReservationStatus: (reservationId: string, status: Reservation["status"]) => void;
-  assignTableToReservation: (reservationId: string, tableNumber: number) => void;
+  updateOrderStatus: (orderId: string, status: Order["status"], cancellationReason?: string) => Promise<void>;
+  updateReservationStatus: (reservationId: string, status: Reservation["status"]) => Promise<void>;
+  assignTableToReservation: (reservationId: string, tableNumber: number) => Promise<void>;
   getTableRangeForGuests: (guests: number) => TableRange;
   getAvailableTables: (date: string, startTime: string, endTime: string, guests: number) => Promise<number[]>;
   getUserReservations: (userId: string) => Reservation[];
   cancelOrder: (orderId: string, reason?: string) => Promise<void>;
+  cancelReservation: (reservationId: string) => Promise<void>;
   getReservationSummary: () => Promise<Record<string, number>>;
   refreshData: () => Promise<void>;
 }
@@ -159,10 +161,16 @@ function mapBackendOrder(raw: Record<string, unknown>): Order {
 }
 
 function mapBackendReservation(raw: Record<string, unknown>): Reservation {
-  const start = String(raw.startTime || "");
-  const end = String(raw.endTime || "");
+  // Handle both nested and flattened structures
+  const tableDetails = raw.tableDetails || raw.tableId;
+  const startTimeFromTable = tableDetails?.startTime || raw.startTime;
+  const endTimeFromTable = tableDetails?.endTime || raw.endTime;
+  const dateFromTable = tableDetails?.date || raw.reservationDate || raw.date;
+  const guestsFromTable = tableDetails?.numberOfGuest || raw.numberOfGuests || raw.guests;
+  const statusFromTable = tableDetails?.tableStatus || raw.status;
 
   const formatTime = (timeStr: string) => {
+    if (!timeStr) return "";
     if (timeStr.includes("T")) {
       const d = new Date(timeStr);
       return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
@@ -170,21 +178,36 @@ function mapBackendReservation(raw: Record<string, unknown>): Reservation {
     return timeStr;
   };
 
+  const formatDate = (dateStr: any) => {
+    if (!dateStr) return "";
+    return String(dateStr).split("T")[0];
+  };
+
   return {
     id: String(raw._id ?? raw.id ?? ""),
-    userId: String(raw.reservationUserId?._id ?? raw.reservationUserId ?? ""),
+    userId: String(raw.userId?._id ?? raw.userId ?? ""),
     name: String(raw.name ?? ""),
-    email: String(raw.reservationUserEmail ?? ""),
-    phone: String(raw.phoneNumber ?? ""),
-    guests: Number(raw.noOfGuests ?? 0),
-    date: String(raw.date).split("T")[0],
-    startTime: formatTime(start),
-    endTime: formatTime(end),
-    time: formatTime(start),
-    notes: String(raw.SpecialRequests ?? ""),
-    status: (String(raw.tableReservationStatus ?? "pending").toLowerCase() as any),
-    assignedTable: Number(raw.tableNo ?? 0),
+    email: String(raw.userEmail ?? raw.reservationUserEmail ?? raw.email ?? ""),
+    phone: String(raw.phoneNumber ?? raw.phone ?? ""),
+    guests: Number(guestsFromTable ?? 0),
+    date: formatDate(dateFromTable),
+    startTime: formatTime(startTimeFromTable),
+    endTime: formatTime(endTimeFromTable),
+    time: formatTime(startTimeFromTable),
+    notes: String(raw.specialRequests ?? raw.SpecialRequests ?? raw.notes ?? ""),
+    status: (() => {
+      const statusMap: Record<string, Reservation["status"]> = {
+        pending: "pending",
+        confirm: "confirmed",
+        completed: "completed",
+        cancelled: "cancelled"
+      };
+      const rawStatus = String(statusFromTable || "pending").toLowerCase();
+      return statusMap[rawStatus] || "pending";
+    })(),
+    assignedTable: Number(tableDetails?.tableNumber ?? raw.assignedTable ?? raw.tableNo ?? 0),
     createdAt: String(raw.createdAt ?? new Date().toISOString()),
+    tableDetails: tableDetails,
   };
 }
 
@@ -217,13 +240,19 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
         user?.role === "admin" ? reservationApi.getAllReservations() : reservationApi.getUserReservations()
       ]);
 
-      const rawO: Record<string, unknown>[] = ordRes.data?.data?.orders ?? ordRes.data?.data ?? ordRes.data ?? [];
+      // Handle orders
+      const rawO = ordRes.data?.data?.orders ?? ordRes.data?.data ?? ordRes.data ?? [];
       if (Array.isArray(rawO)) {
         setOrders(rawO.map(mapBackendOrder));
       }
 
-      const rawR: Record<string, unknown>[] = resRes.data?.data ?? resRes.data ?? [];
-      console.log("rawR", rawR);
+      // Handle reservations - the backend returns reservations array directly
+      let rawR = resRes.data?.data ?? resRes.data ?? [];
+
+      // If the response has a data property that's an array, use that
+      if (rawR && typeof rawR === 'object' && !Array.isArray(rawR)) {
+        rawR = rawR.reservations || rawR.data || [];
+      }
 
       if (Array.isArray(rawR)) {
         setReservations(rawR.map(mapBackendReservation));
@@ -276,13 +305,14 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
             address: orderData.contact.address,
           });
         } else {
+          // For dine-in/takeaway
           res = await orderApi.createHomeDelivery({
-            typeOfOrder: "Home Delivery",
+            typeOfOrder: "Takeaway",
             items: orderData.items.map((i) => ({
               itemId: i.id,
               quantity: i.qty,
             })),
-            address: orderData.contact.address,
+            address: orderData.contact.address || "",
           });
         }
 
@@ -311,7 +341,8 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
             createdAt: new Date().toISOString(),
           };
         }
-      } catch {
+      } catch (error) {
+        console.error("Order creation failed:", error);
         newOrder = {
           ...orderData,
           id: `ORD${Date.now()}`,
@@ -333,14 +364,31 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
   const cancelOrder = useCallback(async (orderId: string, reason?: string) => {
     try {
       await orderApi.cancelOrder(orderId, reason ? { cancellationReason: reason } : undefined);
-    } catch {
-      // Continue updating local state regardless
+    } catch (error) {
+      console.error("Failed to cancel order on backend:", error);
     }
     setOrders((prev) =>
       prev.map((o) =>
         o.id === orderId ? { ...o, status: "cancelled", ...(reason && { cancellationReason: reason }) } : o
       )
     );
+
+    // Refresh data from backend
+    await fetchData();
+    dispatchRefreshEvents();
+  }, [fetchData]);
+
+  const cancelReservation = useCallback(async (reservationId: string) => {
+    try {
+      await reservationApi.cancelReservation(reservationId);
+      setReservations((prev) =>
+        prev.map((r) =>
+          r.id === reservationId ? { ...r, status: "cancelled" } : r
+        )
+      );
+    } catch (error) {
+      console.error("Failed to cancel reservation on backend:", error);
+    }
 
     // Refresh data from backend
     await fetchData();
@@ -364,7 +412,6 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
           endTime
         });
         const raw = res?.data?.data ?? res.data;
-        console.log(raw)
         return raw.freeTables || [];
       } catch (err) {
         console.error("Failed to fetch available tables from backend", err);
@@ -429,7 +476,7 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
           noOfGuests: reservationData.guests,
           name: reservationData.name,
           phoneNumber: reservationData.phone,
-          SpecialRequests: reservationData.notes,
+          specialRequests: reservationData.notes,
           reservationUserEmail: reservationData.email
         });
 
@@ -499,7 +546,7 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
 
       try {
         await reservationApi.updateStatus(reservationId, {
-          tableReservationStatus: statusMap[status] || status
+          tableStatus: statusMap[status] || status
         });
       } catch (err) {
         console.error("Failed to update reservation status on backend", err);
@@ -521,7 +568,7 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
       try {
         await reservationApi.updateStatus(reservationId, {
           tableNo: tableNumber,
-          tableReservationStatus: "Confirm"
+          tableStatus: "Confirm"
         });
       } catch (err) {
         console.error("Failed to assign table on backend", err);
@@ -552,19 +599,25 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
   const getReservationSummary = useCallback(async () => {
     try {
       const res = await reservationApi.getSummary();
-      return res.data?.data ?? {};
+      const summaryData = res.data?.data ?? {};
+
+      // Transform to match expected format
+      return {
+        pending: summaryData.tableStatusSummary?.pending || 0,
+        confirmed: summaryData.tableStatusSummary?.confirm || summaryData.tableStatusSummary?.confirmed || 0,
+        completed: summaryData.tableStatusSummary?.completed || 0,
+        cancelled: summaryData.tableStatusSummary?.cancelled || 0,
+      };
     } catch (err) {
       console.error("Failed to fetch reservation summary", err);
       const summary: Record<string, number> = {
-        Pending: 0,
-        Confirm: 0,
-        Completed: 0,
-        Cancelled: 0
+        pending: 0,
+        confirmed: 0,
+        completed: 0,
+        cancelled: 0
       };
       reservations.forEach(r => {
-        const s = r.status.charAt(0).toUpperCase() + r.status.slice(1);
-        const key = s === "Confirmed" ? "Confirm" : s;
-        if (summary[key] !== undefined) summary[key]++;
+        if (summary[r.status] !== undefined) summary[r.status]++;
       });
       return summary;
     }
@@ -585,6 +638,7 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({
         getUserOrders,
         getUserReservations,
         cancelOrder,
+        cancelReservation,
         getReservationSummary,
         refreshData,
       }}

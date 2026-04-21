@@ -16,7 +16,7 @@ const router = Router()
 
 router.use(verifyJWT)
 
-router.route("/add/table-order").post(tableOrderValidator(), validate, createTableOrder)
+router.route("/add/table-order").post(createTableOrder)
 
 router.route("/add/home-delivery-order").post(homeDeliveryOrderValidator(), validate, createHomeDeliveryOrder)
 
